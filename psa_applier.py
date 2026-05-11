@@ -1,6 +1,5 @@
 from __future__ import annotations
 import os
-import win32com.client
 
 from psa_models import TextLayerRecord, AdaptedParams
 from psa_utils import (
@@ -9,6 +8,7 @@ from psa_utils import (
     enter_smart_object,
     find_layer_by_id,
     find_layer_by_path,
+    get_so_psb_name,
     pt_to_px,
     PSAError,
     SOEnterError,
@@ -30,21 +30,17 @@ def apply_workorder(
         logger.log_info("No enabled layers to process.")
         return ""
 
-    # Build font index
     logger.log_info("Building font index...")
     font_index = build_font_index(app)
     logger.log_info(f"Font index built: {len(font_index)} families")
 
-    # Resolve font PS names
     for record in to_process:
         record.new_font_ps = _resolve_font_for_record(record, font_index, logger)
 
-    # Create _auto copy
     auto_path = _make_auto_path(source_psd_path)
     logger.log_info(f"Creating auto copy: {auto_path}")
     _create_auto_copy(app, source_psd_path, auto_path, logger)
 
-    # Open auto copy
     try:
         auto_doc = app.Open(auto_path)
     except Exception as e:
@@ -53,18 +49,17 @@ def apply_workorder(
     try:
         auto_dpi = float(safe_get(auto_doc, "Resolution", 72.0))
 
-        # Separate direct vs SO layers
         direct_records = [r for r in to_process if not r.in_smart_object]
         so_records = [r for r in to_process if r.in_smart_object]
 
-        # Group SO records by PSB name
         so_groups: dict[str, list[TextLayerRecord]] = {}
         for r in so_records:
             key = r.so_psb_name or r.so_layer_path or "unknown"
             so_groups.setdefault(key, []).append(r)
 
-        # Process direct layers using a reusable lab doc per DPI
+        # Direct layers
         if direct_records:
+            app.ActiveDocument = auto_doc
             with LabDocument(app, auto_dpi) as lab:
                 for record in direct_records:
                     logger.log_layer_before(record)
@@ -77,25 +72,30 @@ def apply_workorder(
                         new_font_ps = record.new_font_ps or record.font
                         new_text = record.new_text if record.new_text is not None else record.text
                         logger.log_apply_start(record.layer_path, record.bounds_h_px, new_font_ps)
+                        # Activate layer before lab (lab switches active doc)
+                        app.ActiveDocument = auto_doc
+                        auto_doc.ActiveLayer = layer
                         params = lab.find_adapted_params(record, new_font_ps, new_text, logger)
-                        _apply_to_text_layer(layer, params, record, logger)
+                        # Restore active doc to auto_doc before writing
+                        app.ActiveDocument = auto_doc
+                        auto_doc.ActiveLayer = layer
+                        _apply_to_text_layer(app, auto_doc, layer, params, record, logger)
                         logger.log_apply_result(record.layer_path, params, record)
                         logger.log_layer_after(record, params)
                     except Exception as e:
                         logger.log_error(f"apply direct layer '{record.layer_path}'", e)
 
-        # Process SO layers
+        # SO layers
         for psb_name, group in so_groups.items():
-            # Find SO layer in auto_doc
-            so_layer = None
-            for record in group:
-                if record.so_layer_id is not None:
-                    so_layer = find_layer_by_id(auto_doc, record.so_layer_id)
-                if so_layer is None and record.so_layer_path:
-                    parts = record.so_layer_path.split("/")
-                    so_layer = find_layer_by_path(auto_doc, parts)
-                if so_layer is not None:
-                    break
+            so_layer = _find_so_by_psb(app, auto_doc, psb_name)
+            if so_layer is None:
+                for record in group:
+                    if record.so_layer_path:
+                        so_layer = find_layer_by_path(auto_doc, record.so_layer_path.split("/"))
+                    if so_layer is None and record.so_layer_id is not None:
+                        so_layer = find_layer_by_id(auto_doc, record.so_layer_id)
+                    if so_layer is not None:
+                        break
 
             if so_layer is None:
                 logger.log_error(f"SO layer for PSB '{psb_name}'",
@@ -103,6 +103,7 @@ def apply_workorder(
                 continue
 
             try:
+                app.ActiveDocument = auto_doc
                 so_doc = enter_smart_object(app, so_layer)
             except SOEnterError as e:
                 logger.log_error(f"enter SO '{psb_name}'", e)
@@ -125,17 +126,22 @@ def apply_workorder(
                             new_font_ps = record.new_font_ps or record.font
                             new_text = record.new_text if record.new_text is not None else record.text
                             logger.log_apply_start(record.layer_path, record.bounds_h_px, new_font_ps)
+                            # Activate SO layer before lab switches active doc
+                            app.ActiveDocument = so_doc
+                            so_doc.ActiveLayer = layer
                             params = lab.find_adapted_params(record, new_font_ps, new_text, logger)
-                            _apply_to_text_layer(layer, params, record, logger)
+                            # Restore SO doc as active before writing
+                            app.ActiveDocument = so_doc
+                            so_doc.ActiveLayer = layer
+                            _apply_to_text_layer(app, so_doc, layer, params, record, logger)
                             logger.log_apply_result(record.layer_path, params, record)
                             logger.log_layer_after(record, params)
                         except Exception as e:
                             logger.log_error(f"apply SO layer '{record.layer_path}'", e)
 
-                # Save and close SO doc
                 try:
                     so_doc.Save()
-                    so_doc.Close(1)  # save changes
+                    so_doc.Close(1)
                 except Exception as e:
                     logger.log_error(f"save/close SO '{psb_name}'", e)
 
@@ -146,8 +152,8 @@ def apply_workorder(
                 except Exception:
                     pass
 
-        # Save and close auto doc
         try:
+            app.ActiveDocument = auto_doc
             auto_doc.Save()
             auto_doc.Close(1)
         except Exception as e:
@@ -165,7 +171,13 @@ def apply_workorder(
     return auto_path
 
 
-def _apply_to_text_layer(art_layer, params: AdaptedParams, record: TextLayerRecord, logger) -> None:
+def _apply_to_text_layer(app, doc, art_layer, params: AdaptedParams, record: TextLayerRecord, logger) -> None:
+    # Ensure correct doc is active and layer is selected
+    try:
+        app.ActiveDocument = doc
+        doc.ActiveLayer = art_layer
+    except Exception:
+        pass
     ti = art_layer.TextItem
     try:
         ti.Font = params.font_ps
@@ -188,7 +200,6 @@ def _apply_to_text_layer(art_layer, params: AdaptedParams, record: TextLayerReco
         ti.Tracking = params.tracking
     except Exception as e:
         logger.log_error(f"set Tracking on '{record.layer_path}'", e)
-    # Set contents last to avoid PS auto-reflow interfering with size
     new_text = record.new_text if record.new_text is not None else record.text
     try:
         ti.Contents = new_text
@@ -196,14 +207,9 @@ def _apply_to_text_layer(art_layer, params: AdaptedParams, record: TextLayerReco
         logger.log_error(f"set Contents on '{record.layer_path}'", e)
 
 
-def _resolve_font_for_record(
-    record: TextLayerRecord,
-    font_index: dict,
-    logger,
-) -> str:
+def _resolve_font_for_record(record: TextLayerRecord, font_index: dict, logger) -> str:
     if not record.new_font_family or not record.new_font_weight:
         return record.font
-
     ps_name = resolve_font(
         font_index=font_index,
         target_family=record.new_font_family,
@@ -217,12 +223,32 @@ def _resolve_font_for_record(
             f"Falling back to original font '{record.font}'."
         )
         return record.font
-
     logger.log_info(
         f"Font resolved: family='{record.new_font_family}' weight='{record.new_font_weight}' "
-        f"→ PS name='{ps_name}'"
+        f"-> PS name='{ps_name}'"
     )
     return ps_name
+
+
+def _find_so_by_psb(app, container, target_psb: str):
+    try:
+        layers = container.Layers
+    except Exception:
+        return None
+    for i in range(layers.Count):
+        try:
+            lyr = layers[i]
+        except Exception:
+            continue
+        kind = safe_get(lyr, "Kind", None)
+        if kind == 17:
+            psb = get_so_psb_name(app, lyr)
+            if psb == target_psb:
+                return lyr
+        result = _find_so_by_psb(app, lyr, target_psb)
+        if result is not None:
+            return result
+    return None
 
 
 def _make_auto_path(source_psd_path: str) -> str:
@@ -231,10 +257,8 @@ def _make_auto_path(source_psd_path: str) -> str:
 
 
 def _create_auto_copy(app, source_path: str, auto_path: str, logger) -> None:
-    # Open the source if not already open, then SaveAs copy
     source_doc = None
     try:
-        # Check if already open
         for i in range(app.Documents.Count):
             try:
                 doc = app.Documents[i]
@@ -255,8 +279,7 @@ def _create_auto_copy(app, source_path: str, auto_path: str, logger) -> None:
             raise PSAError(f"Failed to open source PSD '{source_path}': {e}")
 
     try:
-        psd_opts = win32com.client.Dispatch("Photoshop.PSDSaveOptions")
-        source_doc.SaveAs(auto_path, psd_opts, True)
+        source_doc.SaveAs(auto_path, None, True)
         logger.log_copy_created(source_path, auto_path)
     except Exception as e:
         raise PSAError(f"Failed to create auto copy '{auto_path}': {e}")

@@ -72,7 +72,7 @@ class PSALogger:
         self._write(msg, indent=1)
 
     def log_apply_result(self, layer_path: str, params, record):
-        converged_mark = "✓" if params.converged else "✗"
+        converged_mark = "OK" if params.converged else "!!"
         self._write(
             f"RESULT [{layer_path}]: {converged_mark} "
             f"font={params.font_ps} size_pt={params.size_pt:.4f} "
@@ -91,8 +91,9 @@ class PSALogger:
         )
 
     def log_layer_after(self, record, params):
+        converged = "OK" if params.converged else "!!"
         self._write(
-            f"AFTER  [{record.layer_path}]: text={repr(record.new_text)} "
+            f"AFTER  [{record.layer_path}] [{converged}]: text={repr(record.new_text)} "
             f"font={params.font_ps} size_pt={params.size_pt:.4f} size_px={params.size_px:.4f} "
             f"tracking={params.tracking} auto_leading={params.auto_leading} "
             f"leading_pt={params.leading_pt:.4f} final_h={params.final_bounds_h_px:.2f}px"
