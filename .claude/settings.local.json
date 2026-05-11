@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem C:\\\\PSA -Recurse -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object FullName, Length)",
+      "Bash(Head -50)",
+      "WebSearch",
+      "WebFetch(domain:martechwithme.com)",
+      "WebFetch(domain:theiviaxx.github.io)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:stackoverflow.com)",
+      "WebFetch(domain:community.adobe.com)",
+      "WebFetch(domain:loonghao.github.io)",
+      "Bash(python -c \"import win32com.client; app = win32com.client.Dispatch\\('Photoshop.Application'\\); print\\('PS Version:', app.Version\\)\")",
+      "Bash(python *)"
+    ]
+  }
+}
