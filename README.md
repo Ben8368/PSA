@@ -49,14 +49,15 @@ pt = px × (72 / DPI)
 
 ```
 C:\PSA\
-├── psa.py            CLI 入口，子命令路由 (scan / apply / run)
-├── psa_models.py     数据模型 (TextLayerRecord, AdaptedParams)
-├── psa_utils.py      COM 底层工具函数和异常类
-├── psa_fonts.py      字体索引构建和字重解析匹配
-├── psa_logger.py     结构化日志写入器
-├── psa_scanner.py    文档扫描（含智能对象递归）
-├── psa_lab.py        空白实验室文档 + 15次自适应算法
-└── psa_applier.py    工单应用：创建副本、调用算法、写回属性
+├── psa.py              CLI 入口，子命令路由 (scan / apply / run)
+├── psa_models.py       数据模型 (TextLayerRecord, AdaptedParams)
+├── psa_utils.py        COM 底层工具函数和异常类
+├── psa_fonts.py        字体索引构建和字重解析匹配
+├── psa_logger.py       结构化日志写入器
+├── psa_scanner.py      文档扫描（含智能对象递归）
+├── psa_lab.py          空白实验室文档 + 20次自适应算法 (3 Phase)
+├── psa_applier.py      工单应用：创建副本、_process_layer 统一处理、SO 边界防护
+└── debug_mirror.py     调试工具：每行独立倒序的文案生成
 ```
 
 ### 模块依赖关系
@@ -69,11 +70,26 @@ psa.py
   └── psa_applier.py ──→  psa_utils.py
                       ──→  psa_models.py
                       ──→  psa_fonts.py
-                      ──→  psa_lab.py  ──→  psa_models.py
-                                       ──→  psa_utils.py
+                      ──→  psa_lab.py    ──→  psa_models.py
+                                         ──→  psa_utils.py
 
 psa_logger.py  （被 scanner / applier / lab 共同依赖）
 ```
+
+### 应用阶段核心流程 (`psa_applier.py`)
+
+```
+apply_workorder()
+  └─ _process_layer(app, doc, record, lab, in_so)  ← 统一处理直接层和 SO 层
+       ├─ 定位图层 (find_layer_by_id / find_layer_by_path)
+       ├─ Method A: scale calibration (Lab 中用原文案测 scale)
+       ├─ lab.find_adapted_params()  ← 20次自适应 (Phase 1+2+3)
+       ├─ _apply_to_text_layer()     ← 写回属性
+       ├─ SO 边界防护 (expand_so_canvas, in_so only)
+       └─ Method B: verify + REFINE (≤5轮真实渲染验证)
+```
+
+`_process_layer()` 消除了直接层和 SO 层的重复逻辑，通过 `in_so` 参数切换定位方式。
 
 ---
 
@@ -193,9 +209,13 @@ for i in 1..10:
 - 始终保持 `UseAutoLeading = True`，不调行间距
 - 10 次迭代后误差通常在 1–2px 以内
 
-### Phase 2：精确收敛（第 11–15 次，仅多行）
+### Phase 2：精确收敛（第 11–15 次）
 
-多行文案的高度同时受字号和行间距影响，Phase 1 仅调字号可能留有残差。Phase 2 交替调整行间距和字号：
+多行文案的高度同时受字号和行间距影响，Phase 1 仅调字号可能留有残差。Phase 2 根据文案类型分叉：
+
+#### 多行文案（含 `\r` 或 `\n`）
+
+交替调整行间距和字号：
 
 ```
 UseAutoLeading = False
@@ -218,9 +238,54 @@ for prec_iter in 1..5:
         ti.Leading = ti.Size × 1.2
 ```
 
-### 字间距（预留）
+#### 单行文案
 
-`adjust_tracking()` 函数已在算法末尾调用，当前为 no-op（保留原始 tracking 值）。后续只需在此函数内实现调整逻辑即可。
+单行文案不受行间距影响，Phase 2 使用字号微调二分法（±5% 范围，7 次二分）逐步逼近目标高度：
+
+```
+for prec_iter in 1..5:
+    if |h - target_h| < 1.0: break
+    lo_s = Size × 0.95;  hi_s = Size × 1.05
+    for _ in 1..7:
+        mid_s = (lo_s + hi_s) / 2
+        ti.Size = mid_s
+        if get_h() < target_h: lo_s = mid_s else: hi_s = mid_s
+```
+
+### Phase 3：字间距自适应（第 16–20 次）
+
+字号和行间距确定后，换字体/文案会导致文字宽度偏移。Phase 3 通过调整 tracking 使新文案宽度逼近原始宽度，保持视觉占位一致。
+
+```
+orig_w = measure_text_width(original_font, original_text, original_size, original_tracking)
+
+current_tracking = original_tracking
+for track_iter in 1..5:
+    new_w = get_w()  # 当前新文案宽度
+
+    # Step 1: 二分法搜索最佳 tracking [current-50, current+50] × 7次
+    lo_t = current_tracking - 50;  hi_t = current_tracking + 50
+    for _ in 1..7:
+        mid_t = (lo_t + hi_t) / 2
+        ti.Tracking = mid_t
+        w_test = get_w()
+        if w_test < orig_w: lo_t = mid_t else: hi_t = mid_t
+
+    current_tracking = clamp((lo_t + hi_t) / 2, -100, 200)
+
+    # 宽度差 < 5px 即认为收敛，提前退出
+    if |new_w - orig_w| < 5.0: break
+
+    # Step 2: tracking 调整无效时（diff > 10px），缩小字号 5% 重试
+    if |new_w - orig_w| > 10.0:
+        ti.Tracking = original_tracking  # 恢复
+        ti.Size *= 0.95
+
+        # 边界保护：多行文案检查字号缩小是否破坏了 Phase 2 的行间距结果
+        # 如果影响 > 2px，停止 tracking 调整，保持 leading 优先
+```
+
+**边界保护机制**：多行文案中字号缩小可能破坏 Phase 2 已收敛的行间距。算法会对比缩放前后的 Phase 2 高度，若偏差 > 2px 则判定为"leading 被破坏"，立即停止 tracking 调整，优先保持行间距正确性。
 
 ### 写回顺序
 
@@ -258,6 +323,54 @@ executeAction(idplacedLayerEditContents, new ActionDescriptor(), DialogModes.NO)
 SO 内部的 PSB 可能有独立的分辨率（与外层文档不同）。实验室文档的 DPI 必须与被测文档一致，否则 pt→px 换算错误。因此：
 - 直接图层 → `LabDocument(dpi = auto_doc.Resolution)`
 - SO 内图层 → `LabDocument(dpi = soDoc.Resolution)`
+
+### A+B Scale Calibration（图层缩放校准）
+
+部分文字图层在 PS 中可能被应用了**自由变换**（缩放、旋转等），导致图层级别的 `bounds_h` ≠ 原始文字的实际渲染高度。自适应算法在实验室文档中渲染文字（无变换），如果不校准，Lab 收敛到的字号写回真实图层后会不对。
+
+#### Method A：进入算法前校准
+
+在 `_process_layer()` 中，先用**原文案+原字号**在 Lab 中测量一次高度：
+
+```
+lab_orig_h = lab.measure_text(original_font, original_text, original_size, ...)
+scale = real_bounds_h / lab_orig_h          # 图层变换缩放系数
+target_h_lab = real_bounds_h / scale        # Lab 空间中应该收敛的目标
+```
+
+`scale > 1` 说明原始图层被放大过，`scale < 1` 说明被缩小过。用 `target_h_lab` 代替 `real_bounds_h` 传入自适应算法，确保算法在 Lab 空间中收敛到正确值。
+
+#### Method B：真实渲染验证 + REFINE
+
+自适应写回真实图层后，**读取实际渲染的 bounds**，与期望值比对。偏差 ≥ 2px 时进入 REFINE 阶段（最多 5 轮）：
+
+```
+real_h = _real_bounds_h(app, layer)
+for refine_iter in 1..5:
+    diff = real_h - original_bounds_h
+    if |diff| < 2.0: break
+    ratio = original_bounds_h / real_h
+    params.size_pt *= ratio
+    if not auto_leading: params.leading_pt *= ratio
+    ti.Size = new_size_pt
+    ti.Leading = new_leading   # 如果手动行间距
+    real_h = _real_bounds_h(app, layer)
+```
+
+按同比例缩放字号+行间距，避免 Lab 与真实渲染间的微小差异（如 COM API 精度损失、字体 hinting）累积成可见偏差。收敛阈值 **< 3px**，最终写入 `params.final_bounds_h_px` 和 `params.converged`。
+
+### 智能对象边界防护
+
+修改后的文案可能因字体/字号变化而超出 SO 内部画布边界，导致文字被切割。`psa_applier.py` 在处理完每个 SO 文档后会调用 `expand_so_canvas()`：
+
+```javascript
+// 将当前 SO 文档画布扩大 20%（1.2 倍），居中扩展
+doc.resizeCanvas(origWidth * 1.2, origHeight * 1.2, AnchorPosition.MIDDLECENTER);
+```
+
+- 扩边比例为 **120%**（原始尺寸 × 1.2），居中向四面扩展
+- 所有 SO 组内图层处理完成后、SO 保存前执行
+- 异常时记录 WARNING 日志但不中断流程
 
 ---
 
@@ -377,18 +490,30 @@ python psa.py --psd "banner.psd" --workorder "banner_workorder.json"
 ### 当前限制
 
 - 需要 Photoshop 在 Windows 上运行（COM 依赖）
-- 字间距自适应暂未实现（预留 `adjust_tracking()` 接口）
 - 字符级别的混排格式（同一图层内多种字体/字号）暂不支持，只处理图层级属性
 - Phase 2 精确调整的收敛判定阈值为 1px，极端情况（如超大字号）可能需要调整
+- **伪粗体（FauxBold）图层**在字体变更后可能出现边界框震荡，REFINE 难以收敛到 2px 以内（测试中约 5px 偏差，视觉可接受）
+- **二级嵌套 SO**（PSB 内再包含 PSB）暂不支持，进入一级 SO 后无法再进入其内部的 SO
+- SO 边界防护采用固定 120% 扩边，极端字号变化下可能需要更大比例
+
+### 已实现功能（历史版本）
+
+| 功能 | 版本 | 说明 |
+|---|---|---|
+| 字间距自适应（Phase 3） | v1.4.0 | 5 次迭代二分法，支持 fallback 和 leading 边界保护 |
+| A+B Scale Calibration | v1.3.0 | 变换图层自动校准 + 真实渲染验证 REFINE |
+| SO 边界防护 | v1.2.0 | 120% 画布扩展，防止文字切割 |
+| 单行 Phase 2 分支 | v1.4.0 | 单行文案使用字号微调二分法，多行保持 leading+size 交替 |
 
 ### 扩展点
 
 | 功能 | 位置 | 说明 |
-|---|---|
-| 字间距自适应 | `psa_lab.py: adjust_tracking()` | 在字号确定后调用，可实现二分法调整 |
+|---|---|---|
 | 批量文档处理 | `psa.py` | 新增 `batch` 子命令，遍历目录下所有 PSD |
 | GUI 工单编辑器 | 新文件 | 用 tkinter 或 web 界面替代手动编辑 JSON |
 | 颜色替换 | `psa_applier.py: _apply_to_text_layer()` | TextItem.Color 已在扫描中记录 |
+| 二级嵌套 SO | `psa_scanner.py` / `psa_applier.py` | 递归进入深层 SO |
+| 伪粗体特殊处理 | `psa_lab.py` | 增加 REFINE 迭代次数或放宽收敛阈值 |
 
 ---
 
