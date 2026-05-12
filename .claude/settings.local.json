@@ -12,7 +12,9 @@
       "WebFetch(domain:community.adobe.com)",
       "WebFetch(domain:loonghao.github.io)",
       "Bash(python -c \"import win32com.client; app = win32com.client.Dispatch\\('Photoshop.Application'\\); print\\('PS Version:', app.Version\\)\")",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

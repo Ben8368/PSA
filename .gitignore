@@ -13,7 +13,7 @@ venv/
 
 # PSA runtime outputs
 *_workorder.json
-*_auto.psd
+*.psd
 *.log
 
 # PSD source files (too large for GitHub)
