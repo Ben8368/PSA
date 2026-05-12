@@ -151,7 +151,9 @@ class LabDocument:
             else:
                 hi = mid
 
-        # Phase 2: 5 precision iterations (multiline only)
+        # Phase 2: 5 precision iterations
+        # For multiline: alternate between leading and size adjustments
+        # For singleline: only adjust size via binary search
         if is_multiline:
             try:
                 ti.UseAutoLeading = False
@@ -164,6 +166,8 @@ class LabDocument:
                 h = get_h()
                 if abs(h - target_h) < 1.0:
                     break
+
+                # Step 1: Adjust leading (7-iteration binary search)
                 try:
                     current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
                     lo_l = current_size * 0.8
@@ -194,6 +198,7 @@ class LabDocument:
                 if logger:
                     logger.log_iteration(10 + prec_iter, "lead", current_leading, h, target_h)
 
+                # Step 2: If still not converged, adjust size and re-anchor leading
                 if abs(h - target_h) >= 1.0:
                     try:
                         current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
@@ -203,10 +208,56 @@ class LabDocument:
                             new_size = current_size * 1.03
                         ti.Size = new_size
                         ti.Leading = new_size * 1.2
+                        last_mid = new_size
                     except Exception:
                         pass
+        else:
+            # Singleline: 5 iterations of binary search on size only
+            for prec_iter in range(1, 6):
+                h = get_h()
+                if abs(h - target_h) < 1.0:
+                    break
+                try:
+                    current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
+                    lo_s = current_size * 0.95
+                    hi_s = current_size * 1.05
+                    for _ in range(7):
+                        mid_s = (lo_s + hi_s) / 2.0
+                        try: ti.Size = mid_s
+                        except Exception: pass
+                        h_test = get_h()
+                        if h_test < target_h:
+                            lo_s = mid_s
+                        else:
+                            hi_s = mid_s
+                    last_mid = (lo_s + hi_s) / 2.0
+                    try: ti.Size = last_mid
+                    except Exception: pass
+                except Exception:
+                    pass
 
-        # Phase 3: 5 tracking adaptation iterations
+                h = get_h()
+                try:
+                    current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
+                except Exception:
+                    current_size = last_mid
+
+                log_entry = (
+                    f"[prec {prec_iter:02d} size] tried={current_size:.4f}pt"
+                    f" -> h={h:.2f}px target={target_h:.2f}px"
+                )
+                iterations_log.append(log_entry)
+                if logger:
+                    logger.log_iteration(10 + prec_iter, "size", current_size, h, target_h)
+
+        # Capture Phase 2 state for boundary protection
+        phase2_h = get_h()
+        try:
+            phase2_leading = float(safe_get(ti, "Leading", 0.0) or 0.0) if not is_multiline else 0.0
+        except Exception:
+            phase2_leading = 0.0
+
+        # Phase 3: 5 tracking/size micro-adjustment iterations
         # Measure original text width for comparison
         try:
             orig_w = self.measure_text_width(
@@ -219,38 +270,38 @@ class LabDocument:
         current_tracking = record.tracking
         best_tracking = current_tracking
         best_tracking_diff = float('inf')
+        tracking_adjustment_failed = False
 
         for track_iter in range(1, 6):
             try:
                 current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
                 new_w = get_w()
 
-                # Calculate tracking adjustment needed
-                if orig_w > 1.0:
-                    width_ratio = new_w / orig_w
-                    # Adjust tracking to bring widths closer
-                    # Negative tracking makes text tighter, positive makes it looser
-                    if width_ratio > 1.05:  # new text is too wide
-                        current_tracking = current_tracking - 20
-                    elif width_ratio < 0.95:  # new text is too narrow
-                        current_tracking = current_tracking + 20
-                    else:
-                        # Close enough, stop adjusting
-                        current_tracking = best_tracking
-                        break
-
-                # Clamp tracking to reasonable range
-                current_tracking = max(-100, min(200, current_tracking))
-                try:
-                    ti.Tracking = current_tracking
-                except Exception:
-                    pass
+                # Step 1: Try to adjust tracking to match original width
+                if orig_w > 1.0 and not tracking_adjustment_failed:
+                    width_diff = new_w - orig_w
+                    # Binary search for optimal tracking
+                    lo_t = current_tracking - 50
+                    hi_t = current_tracking + 50
+                    for _ in range(7):
+                        mid_t = (lo_t + hi_t) / 2.0
+                        try: ti.Tracking = mid_t
+                        except Exception: pass
+                        w_test = get_w()
+                        if w_test < orig_w:
+                            lo_t = mid_t
+                        else:
+                            hi_t = mid_t
+                    current_tracking = (lo_t + hi_t) / 2.0
+                    current_tracking = max(-100, min(200, current_tracking))
+                    try: ti.Tracking = current_tracking
+                    except Exception: pass
 
                 new_w_after = get_w()
                 tracking_diff = abs(new_w_after - orig_w) if orig_w > 0 else 0
 
                 log_entry = (
-                    f"[track {track_iter:02d}] tracking={current_tracking:.1f} "
+                    f"[micro {track_iter:02d} track] tracking={current_tracking:.1f} "
                     f"-> w={new_w_after:.2f}px orig_w={orig_w:.2f}px diff={tracking_diff:.2f}px"
                 )
                 iterations_log.append(log_entry)
@@ -263,19 +314,37 @@ class LabDocument:
                 if tracking_diff < 5.0:
                     break
 
-                # If tracking adjustment is not helping, try reducing size instead
-                if track_iter == 5 and tracking_diff > 10.0:
+                # Step 2: If tracking adjustment not helping, try size adjustment
+                if tracking_diff > 10.0 and not tracking_adjustment_failed:
                     try:
                         ti.Tracking = record.tracking  # restore original tracking
                         new_size = current_size * 0.95
                         ti.Size = new_size
-                        log_entry = f"[track {track_iter:02d} fallback] restored tracking, reduced size to {new_size:.4f}pt"
+                        last_mid = new_size
+                        log_entry = f"[micro {track_iter:02d} size] restored tracking, reduced size to {new_size:.4f}pt"
                         iterations_log.append(log_entry)
+
+                        # Check if Phase 2 leading is affected (multiline only)
+                        if is_multiline:
+                            new_h = get_h()
+                            h_diff = abs(new_h - phase2_h)
+                            if h_diff > 2.0:
+                                log_entry = (
+                                    f"[micro {track_iter:02d} boundary] WARNING: size reduction affected leading. "
+                                    f"phase2_h={phase2_h:.2f}px new_h={new_h:.2f}px diff={h_diff:.2f}px. "
+                                    f"Stopping tracking adjustment."
+                                )
+                                iterations_log.append(log_entry)
+                                tracking_adjustment_failed = True
+                                break
+
+                        # Try tracking adjustment again with new size
+                        current_tracking = record.tracking
                     except Exception:
                         pass
 
             except Exception as e:
-                log_entry = f"[track {track_iter:02d}] error: {str(e)}"
+                log_entry = f"[micro {track_iter:02d}] error: {str(e)}"
                 iterations_log.append(log_entry)
 
         # Apply best tracking found
@@ -283,6 +352,13 @@ class LabDocument:
             ti.Tracking = best_tracking
         except Exception:
             pass
+
+        if tracking_adjustment_failed:
+            log_entry = (
+                f"[phase3 final] Text width and original differ significantly. "
+                f"Prioritized leading preservation over width matching."
+            )
+            iterations_log.append(log_entry)
 
         # Capture final state
         final_h = get_h()
