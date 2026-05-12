@@ -64,6 +64,15 @@ class LabDocument:
             except Exception:
                 return 0.0
 
+    def _get_w(self, lab_layer) -> float:
+        """Get text layer width in pixels."""
+        with PixelUnitsContext(self._app):
+            try:
+                bounds = lab_layer.Bounds
+                return float(bounds[2]) - float(bounds[0])
+            except Exception:
+                return 0.0
+
     def measure_text(self, font_ps: str, contents: str, size_pt: float,
                       tracking: float, auto_leading: bool, leading_pt: float) -> float:
         """Render text with given params in lab doc, return its bounds height in px. Cleans up layer after."""
@@ -80,6 +89,22 @@ class LabDocument:
             pass
         return h
 
+    def measure_text_width(self, font_ps: str, contents: str, size_pt: float,
+                           tracking: float, auto_leading: bool, leading_pt: float) -> float:
+        """Render text and return its bounds width in px."""
+        if self._doc is None:
+            raise AdaptationError("Lab document is not open.")
+        self._activate()
+        lab_layer, _ti = self._create_text_layer(
+            font_ps, contents, size_pt, tracking, auto_leading, leading_pt
+        )
+        w = self._get_w(lab_layer)
+        try:
+            lab_layer.Delete()
+        except Exception:
+            pass
+        return w
+
     def find_adapted_params(
         self,
         record: TextLayerRecord,
@@ -93,9 +118,6 @@ class LabDocument:
             raise AdaptationError("Lab document is not open.")
 
         dpi = self._resolution
-        # Target stored in record is the REAL-world rendered height (possibly scaled by
-        # layer transform). target_h_override is the LAB-space equivalent after correcting
-        # for that scale via measure_text() comparison.
         target_h = target_h_override if target_h_override is not None else record.bounds_h_px
         is_multiline = "\r" in new_text or "\n" in new_text
         iterations_log: list[str] = []
@@ -107,6 +129,9 @@ class LabDocument:
 
         def get_h() -> float:
             return self._get_h(lab_layer)
+
+        def get_w() -> float:
+            return self._get_w(lab_layer)
 
         # Phase 1: 10-iteration binary search on size
         lo, hi = 1.0, 500.0
@@ -181,8 +206,83 @@ class LabDocument:
                     except Exception:
                         pass
 
-        # Tracking placeholder
-        self.adjust_tracking(ti, record)
+        # Phase 3: 5 tracking adaptation iterations
+        # Measure original text width for comparison
+        try:
+            orig_w = self.measure_text_width(
+                record.font, record.text, record.size_pt,
+                record.tracking, record.auto_leading, record.leading_pt
+            )
+        except Exception:
+            orig_w = 0.0
+
+        current_tracking = record.tracking
+        best_tracking = current_tracking
+        best_tracking_diff = float('inf')
+
+        for track_iter in range(1, 6):
+            try:
+                current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
+                new_w = get_w()
+
+                # Calculate tracking adjustment needed
+                if orig_w > 1.0:
+                    width_ratio = new_w / orig_w
+                    # Adjust tracking to bring widths closer
+                    # Negative tracking makes text tighter, positive makes it looser
+                    if width_ratio > 1.05:  # new text is too wide
+                        current_tracking = current_tracking - 20
+                    elif width_ratio < 0.95:  # new text is too narrow
+                        current_tracking = current_tracking + 20
+                    else:
+                        # Close enough, stop adjusting
+                        current_tracking = best_tracking
+                        break
+
+                # Clamp tracking to reasonable range
+                current_tracking = max(-100, min(200, current_tracking))
+                try:
+                    ti.Tracking = current_tracking
+                except Exception:
+                    pass
+
+                new_w_after = get_w()
+                tracking_diff = abs(new_w_after - orig_w) if orig_w > 0 else 0
+
+                log_entry = (
+                    f"[track {track_iter:02d}] tracking={current_tracking:.1f} "
+                    f"-> w={new_w_after:.2f}px orig_w={orig_w:.2f}px diff={tracking_diff:.2f}px"
+                )
+                iterations_log.append(log_entry)
+
+                if tracking_diff < best_tracking_diff:
+                    best_tracking_diff = tracking_diff
+                    best_tracking = current_tracking
+
+                # If width is close enough, stop
+                if tracking_diff < 5.0:
+                    break
+
+                # If tracking adjustment is not helping, try reducing size instead
+                if track_iter == 5 and tracking_diff > 10.0:
+                    try:
+                        ti.Tracking = record.tracking  # restore original tracking
+                        new_size = current_size * 0.95
+                        ti.Size = new_size
+                        log_entry = f"[track {track_iter:02d} fallback] restored tracking, reduced size to {new_size:.4f}pt"
+                        iterations_log.append(log_entry)
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                log_entry = f"[track {track_iter:02d}] error: {str(e)}"
+                iterations_log.append(log_entry)
+
+        # Apply best tracking found
+        try:
+            ti.Tracking = best_tracking
+        except Exception:
+            pass
 
         # Capture final state
         final_h = get_h()
@@ -212,16 +312,9 @@ class LabDocument:
             auto_leading=final_auto_leading,
             leading_pt=final_leading_pt,
             leading_px=final_leading_px,
-            tracking=record.tracking,
+            tracking=best_tracking,
             final_bounds_h_px=final_h,
             target_h_px=target_h,
             converged=converged,
             iterations_log=iterations_log,
         )
-
-    def adjust_tracking(self, ti, record: TextLayerRecord) -> None:
-        # Placeholder: preserves original tracking. No auto-adjustment currently.
-        try:
-            ti.Tracking = record.tracking
-        except Exception:
-            pass

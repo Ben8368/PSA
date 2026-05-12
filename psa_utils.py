@@ -185,6 +185,21 @@ var fname = soDesc.getString(stringIDToTypeID("fileReference"));
 fname;
 """
 
+_JS_EXPAND_SO_CANVAS = """
+// Expand the canvas of the current SO document by 20% (scale 1.2x)
+// This prevents text from being clipped at SO boundaries
+var doc = app.activeDocument;
+var origWidth = doc.width;
+var origHeight = doc.height;
+var newWidth = origWidth * 1.2;
+var newHeight = origHeight * 1.2;
+var offsetX = (newWidth - origWidth) / 2;
+var offsetY = (newHeight - origHeight) / 2;
+
+// Resize canvas
+doc.resizeCanvas(newWidth, newHeight, AnchorPosition.MIDDLECENTER);
+"""
+
 
 def get_so_psb_name(app, so_layer) -> str:
     try:
@@ -196,6 +211,15 @@ def get_so_psb_name(app, so_layer) -> str:
         return so_layer.Name
     except Exception:
         return so_layer.Name
+
+
+def expand_so_canvas(app, so_doc) -> bool:
+    """Expand the canvas of a Smart Object document by 20% to prevent text clipping."""
+    try:
+        app.DoJavaScript(_JS_EXPAND_SO_CANVAS)
+        return True
+    except Exception:
+        return False
 
 
 def pt_to_px(pt: float, dpi: float) -> float:

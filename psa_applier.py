@@ -9,6 +9,7 @@ from psa_utils import (
     find_layer_by_id,
     find_layer_by_path,
     get_so_psb_name,
+    expand_so_canvas,
     pt_to_px,
     layer_bounds_px,
     PSAError,
@@ -185,6 +186,14 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
         app.ActiveDocument = doc
         doc.ActiveLayer = layer
         _apply_to_text_layer(app, doc, layer, params, record, logger)
+
+        # ===== Boundary protection for Smart Objects =====
+        if in_so:
+            try:
+                expand_so_canvas(app, doc)
+                logger.log_info(f"BOUNDARY PROTECT [{record.layer_path}]: Expanded SO canvas by 20%")
+            except Exception as e:
+                logger.log_warning(f"BOUNDARY PROTECT [{record.layer_path}]: {str(e)}")
 
         # ===== Method B: verify real rendered height, refine if needed =====
         try:
