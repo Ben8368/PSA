@@ -6,6 +6,30 @@
 
 ## [未发布]
 
+## [1.5.2] - 2026-05-13
+
+### "保一条"安全策略
+- 各阶段早退时追加一次额外迭代再跳转，避免边界震荡导致假收敛
+- Phase 1/2/3 及 REFINE 全部覆盖，剧组"保一条"思路落地
+
+### PSA-MediaTools 适配器
+- 新增 `psa_mediatools_adapter/` 包，4 个公开函数（scan/apply/run/verify-font）
+- `_bridge.py` 桥接 PhotoshopConnector ↔ PSA raw COM
+- 自动跳过无变更图层和装饰性单英文字符
+- 不指定字重时自动匹配最接近字重
+- 输出结果 JSON 可直接供前端进行前后对比展示
+
+### 三阶段魔鬼测试
+- Stage 1：西班牙语 + 逐行镜像反转（无字体变更），20/20 收敛
+- Stage 2：西班牙语 + 镜像 + Noto Sans → CapCut Sans Display（无指定字重），21/21 收敛
+- Stage 3：西班牙语 + 镜像 + 全部字体随机 → Segoe UI（魔鬼测试），21/21 收敛
+
+### 代码变更
+- `psa_lab.py`：保一条策略（4 个阶段）
+- `psa_applier.py`：REFINE 保一条 + 字重空匹配修复
+- `psa_logger.py`：新增 `log_path` 属性
+- `psa_mediatools_adapter/`：新包（577 行）
+
 ## [1.5.1] - 2026-05-12
 
 ### 迭代策略：激进早退

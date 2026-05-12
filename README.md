@@ -496,6 +496,8 @@ python psa.py --psd "banner.psd" --workorder "banner_workorder.json"
 
 | 功能 | 版本 | 说明 |
 |---|---|---|
+| "保一条"安全策略 | v1.5.2 | 各阶段早退时追加一次额外迭代，防边界震荡假收敛 |
+| MediaTools 适配器 | v1.5.2 | 4 API（scan/apply/run/verify），桥接 PhotoshopConnector，结果 JSON 供前端展示 |
 | 激进早退迭代策略 | v1.5.1 | 各阶段"最多 N 轮 + 早退"，Phase 1 最多 10 轮，Phase 2/3 最多 5 轮 |
 | 装饰性单英文字符跳过 | v1.5.1 | 单个 ASCII 字母图层自动跳过，中文单字不受影响 |
 | 嵌套 SO 深度上限 3 层 | v1.5.1 | Scanner + Applier 均限制最多 3 层，超出跳过并记录 |

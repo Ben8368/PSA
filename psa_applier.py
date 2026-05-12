@@ -217,10 +217,13 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
 
             max_refine = 5 if record.faux_bold else 3
             refine_converge_px = 4.0 if record.faux_bold else 2.0
+            _refine_safety = False
             for refine_iter in range(1, max_refine + 1):
                 diff = real_h - record.bounds_h_px
                 if abs(diff) < refine_converge_px:
-                    break
+                    if _refine_safety:
+                        break
+                    _refine_safety = True
                 ratio = record.bounds_h_px / real_h if real_h > 0.5 else 1.0
                 new_size_pt = params.size_pt * ratio
                 try:

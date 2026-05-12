@@ -141,6 +141,7 @@ class LabDocument:
         # Phase 1: binary search on size, max 10 iterations, early exit
         lo, hi = 1.0, 500.0
         last_mid = 72.0
+        _p1_safety = False
         for i in range(1, 11):
             mid = (lo + hi) / 2.0
             try: ti.Size = mid
@@ -157,7 +158,9 @@ class LabDocument:
                 hi = mid
             # Early exit: search range within 2pt or height within 4% of target
             if abs(hi - lo) < 2.0 or (h > 0 and abs(h - target_h) / target_h < 0.04):
-                break
+                if _p1_safety:
+                    break
+                _p1_safety = True
 
         # Phase 2: 5 precision iterations
         # For multiline: alternate between leading and size adjustments
@@ -170,10 +173,13 @@ class LabDocument:
             except Exception:
                 pass
 
+            _p2_safety = False
             for prec_iter in range(1, 6):
                 h = get_h()
                 if abs(h - target_h) < phase2_threshold:
-                    break
+                    if _p2_safety:
+                        break
+                    _p2_safety = True
 
                 # Step 1: Adjust leading (5-iteration binary search)
                 try:
@@ -221,10 +227,13 @@ class LabDocument:
                         pass
         else:
             # Singleline (or multiline with auto_leading): size-only binary search
+            _p2_safety = False
             for prec_iter in range(1, 6):
                 h = get_h()
                 if abs(h - target_h) < phase2_threshold:
-                    break
+                    if _p2_safety:
+                        break
+                    _p2_safety = True
                 try:
                     current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
                     lo_s = current_size * 0.95
@@ -280,6 +289,7 @@ class LabDocument:
         best_tracking_diff = float('inf')
         tracking_adjustment_failed = False
 
+        _p3_safety = False
         for track_iter in range(1, 6):
             try:
                 current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
@@ -318,9 +328,11 @@ class LabDocument:
                     best_tracking_diff = tracking_diff
                     best_tracking = current_tracking
 
-                # If width is close enough, stop
+                # If width is close enough, stop (with safety take)
                 if tracking_diff < 5.0:
-                    break
+                    if _p3_safety:
+                        break
+                    _p3_safety = True
 
                 # Step 2: If tracking adjustment not helping, try size adjustment
                 if tracking_diff > 10.0 and not tracking_adjustment_failed:
