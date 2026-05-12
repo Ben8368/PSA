@@ -138,7 +138,7 @@ class LabDocument:
         def get_w() -> float:
             return self._get_w(lab_layer)
 
-        # Phase 1: 10-iteration binary search on size
+        # Phase 1: binary search on size, max 10 iterations, early exit
         lo, hi = 1.0, 500.0
         last_mid = 72.0
         for i in range(1, 11):
@@ -155,6 +155,9 @@ class LabDocument:
                 lo = mid
             else:
                 hi = mid
+            # Early exit: search range within 2pt or height within 4% of target
+            if abs(hi - lo) < 2.0 or (h > 0 and abs(h - target_h) / target_h < 0.04):
+                break
 
         # Phase 2: 5 precision iterations
         # For multiline: alternate between leading and size adjustments
@@ -172,12 +175,12 @@ class LabDocument:
                 if abs(h - target_h) < phase2_threshold:
                     break
 
-                # Step 1: Adjust leading (7-iteration binary search)
+                # Step 1: Adjust leading (5-iteration binary search)
                 try:
                     current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
                     lo_l = current_size * 0.8
                     hi_l = current_size * 2.5
-                    for _ in range(7):
+                    for _ in range(5):
                         mid_l = (lo_l + hi_l) / 2.0
                         try: ti.Leading = mid_l
                         except Exception: pass
@@ -201,7 +204,7 @@ class LabDocument:
                 )
                 iterations_log.append(log_entry)
                 if logger:
-                    logger.log_iteration(10 + prec_iter, "lead", current_leading, h, target_h)
+                    logger.log_iteration(7 + prec_iter, "lead", current_leading, h, target_h)
 
                 # Step 2: If still not converged, adjust size and re-anchor leading
                 if abs(h - target_h) >= phase2_threshold:
@@ -226,7 +229,7 @@ class LabDocument:
                     current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
                     lo_s = current_size * 0.95
                     hi_s = current_size * 1.05
-                    for _ in range(7):
+                    for _ in range(5):
                         mid_s = (lo_s + hi_s) / 2.0
                         try: ti.Size = mid_s
                         except Exception: pass
@@ -253,7 +256,7 @@ class LabDocument:
                 )
                 iterations_log.append(log_entry)
                 if logger:
-                    logger.log_iteration(10 + prec_iter, "size", current_size, h, target_h)
+                    logger.log_iteration(7 + prec_iter, "size", current_size, h, target_h)
 
         # Capture Phase 2 state for boundary protection
         phase2_h = get_h()
@@ -288,7 +291,7 @@ class LabDocument:
                     # Binary search for optimal tracking
                     lo_t = current_tracking - 50
                     hi_t = current_tracking + 50
-                    for _ in range(7):
+                    for _ in range(5):
                         mid_t = (lo_t + hi_t) / 2.0
                         try: ti.Tracking = mid_t
                         except Exception: pass

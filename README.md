@@ -492,16 +492,19 @@ python psa.py --psd "banner.psd" --workorder "banner_workorder.json"
 - 需要 Photoshop 在 Windows 上运行（COM 依赖）
 - 字符级别的混排格式（同一图层内多种字体/字号）暂不支持，只处理图层级属性
 
-### 已实现功能（v1.5.0 更新）
+### 已实现功能（v1.5.x 更新）
 
 | 功能 | 版本 | 说明 |
 |---|---|---|
-| 自适应收敛阈值 | v1.5.0 | Phase 2 阈值按目标高度 0.5% 缩放（最小 1px），超大字号不再过于严格 |
-| 伪粗体（FauxBold）特殊处理 | v1.5.0 | REFINE 迭代 5→8 次，收敛阈值放宽至 4px/6px，解决边界框震荡 |
-| 二级嵌套 SO 支持 | v1.5.0 | 新增 `so_chain` 字段追踪 SO 嵌套链，applier 递归进入深层 SO |
+| 激进早退迭代策略 | v1.5.1 | 各阶段"最多 N 轮 + 早退"，Phase 1 最多 10 轮，Phase 2/3 最多 5 轮 |
+| 装饰性单英文字符跳过 | v1.5.1 | 单个 ASCII 字母图层自动跳过，中文单字不受影响 |
+| 嵌套 SO 深度上限 3 层 | v1.5.1 | Scanner + Applier 均限制最多 3 层，超出跳过并记录 |
+| 自适应收敛阈值 | v1.5.0 | Phase 2 阈值按目标高度 0.5% 缩放（最小 1px） |
+| 伪粗体（FauxBold）特殊处理 | v1.5.0 | REFINE 放宽收敛阈值和迭代次数，解决边界框震荡 |
+| 二级嵌套 SO 支持 | v1.5.0 | 新增 `so_chain` 字段追踪 SO 嵌套链，applier 递归进入 |
 | 自适应 SO 边界扩展 | v1.5.0 | 扩边比例按字号变化率动态计算 `max(1.2, ratio*1.1)`，上限 3x |
-| 字体名空格容错匹配 | v1.5.0 | `resolve_font` 增加去空格回退搜索（如 "NotoSans" → "Noto Sans"） |
-| 自动行距优化 | v1.5.0 | multiline+auto_leading 文案不再强制修改 leading，减少抖动 |
+| 字体名空格容错匹配 | v1.5.0 | `resolve_font` 增加去空格回退搜索 |
+| 自动行距优化 | v1.5.0 | multiline+auto_leading 文案不再强制修改 leading |
 | 字间距自适应（Phase 3） | v1.4.0 | 5 次迭代二分法，支持 fallback 和 leading 边界保护 |
 | A+B Scale Calibration | v1.3.0 | 变换图层自动校准 + 真实渲染验证 REFINE |
 | SO 边界防护 | v1.2.0 | 动态画布扩展，防止文字切割 |

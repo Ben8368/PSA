@@ -28,8 +28,26 @@ def apply_workorder(
     logger,
 ) -> str:
     to_process = [r for r in records if r.enabled]
+
+    # Skip single English letters (decorative, not meaningful text)
+    skipped_decorative = 0
+    filtered = []
+    for r in to_process:
+        stripped = (r.text or "").strip()
+        if len(stripped) == 1 and stripped.isascii() and stripped.isalpha():
+            logger.log_info(
+                f"SKIP decorative single English char '{stripped}' "
+                f"at '{r.layer_path}'"
+            )
+            skipped_decorative += 1
+            continue
+        filtered.append(r)
+    to_process = filtered
+    if skipped_decorative:
+        logger.log_info(f"Skipped {skipped_decorative} decorative single-English-char layer(s)")
+
     if not to_process:
-        logger.log_info("No enabled layers to process.")
+        logger.log_info("No enabled layers to process (after filtering).")
         return ""
 
     logger.log_info("Building font index...")
@@ -197,7 +215,7 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
                 f"diff={real_h - record.bounds_h_px:+.2f}px"
             )
 
-            max_refine = 8 if record.faux_bold else 5
+            max_refine = 5 if record.faux_bold else 3
             refine_converge_px = 4.0 if record.faux_bold else 2.0
             for refine_iter in range(1, max_refine + 1):
                 diff = real_h - record.bounds_h_px
@@ -362,8 +380,8 @@ def _process_so_level(app, doc, records: list[TextLayerRecord], logger, dpi: flo
 
     for r in records:
         chain_len = len(r.so_chain)
-        if chain_len <= depth:
-            # Legacy (chain_len=0) or exact match at this level
+        if chain_len <= depth or depth >= 3:
+            # Legacy, exact match, or max depth reached — process directly
             direct_here.append(r)
         else:
             next_entry = r.so_chain[depth]

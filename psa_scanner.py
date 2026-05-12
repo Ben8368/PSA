@@ -98,6 +98,16 @@ def _walk_layers(
                     logger.log_error(f"scan text layer {'/'.join(current_path)}", e)
 
         elif kind == 17:  # SmartObject
+            # Cap nested SO depth at 3 levels
+            current_depth = len(so_chain or [])
+            if current_depth >= 3:
+                if logger:
+                    logger.log_info(
+                        f"SO max depth reached (3), skipping nested SO: "
+                        f"{'/'.join(current_path)}"
+                    )
+                continue
+
             psb_name = get_so_psb_name(app, layer)
 
             if psb_name in visited_psbs:
