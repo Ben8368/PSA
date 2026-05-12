@@ -101,6 +101,13 @@ def resolve_font(
                 candidates = entries
                 break
     if not candidates:
+        # Try whitespace-normalized search (e.g. "NotoSans" → "Noto Sans")
+        target_normalized = target_family.replace(" ", "").lower()
+        for fam, entries in font_index.items():
+            if fam.replace(" ", "").lower() == target_normalized:
+                candidates = entries
+                break
+    if not candidates:
         return None
 
     # Determine if original was italic

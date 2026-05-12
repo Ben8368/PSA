@@ -231,6 +231,7 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
                 )
 
             params.final_bounds_h_px = real_h
+            params.target_h_px = record.bounds_h_px
             params.converged = abs(real_h - record.bounds_h_px) < 3.0
         except Exception as e:
             logger.log_error(f"verify '{record.layer_path}'", e)

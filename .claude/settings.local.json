@@ -14,7 +14,11 @@
       "Bash(python -c \"import win32com.client; app = win32com.client.Dispatch\\('Photoshop.Application'\\); print\\('PS Version:', app.Version\\)\")",
       "Bash(python *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(if \\(Test-Path \"test.psd\"\\) { \"test.psd exists, size: {0:N2} MB\" -f \\(\\(Get-Item \"test.psd\"\\).Length / 1MB\\) } else { \"test.psd NOT found\" })",
+      "PowerShell(if \\(Test-Path \"test_auto.psd\"\\) { \"test_auto.psd exists, modified: {0}\" -f \\(Get-Item \"test_auto.psd\"\\).LastWriteTime } else { \"test_auto.psd NOT found\" })",
+      "PowerShell(python psa.py scan --psd test.psd)"
     ]
   }
 }

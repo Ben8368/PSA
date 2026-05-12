@@ -124,7 +124,7 @@ class LabDocument:
 
         self._activate()
         lab_layer, ti = self._create_text_layer(
-            new_font_ps, new_text, 72.0, record.tracking, True, 0.0
+            new_font_ps, new_text, 72.0, record.tracking, record.auto_leading, record.leading_pt
         )
 
         def get_h() -> float:
@@ -154,7 +154,7 @@ class LabDocument:
         # Phase 2: 5 precision iterations
         # For multiline: alternate between leading and size adjustments
         # For singleline: only adjust size via binary search
-        if is_multiline:
+        if is_multiline and not record.auto_leading:
             try:
                 ti.UseAutoLeading = False
                 current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
@@ -212,7 +212,7 @@ class LabDocument:
                     except Exception:
                         pass
         else:
-            # Singleline: 5 iterations of binary search on size only
+            # Singleline (or multiline with auto_leading): size-only binary search
             for prec_iter in range(1, 6):
                 h = get_h()
                 if abs(h - target_h) < 1.0:
