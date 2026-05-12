@@ -16,6 +16,10 @@ venv/
 *_auto.psd
 *.log
 
+# PSD source files (too large for GitHub)
+*.psd
+*.psb
+
 # OS
 .DS_Store
 Thumbs.db
