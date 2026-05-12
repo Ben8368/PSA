@@ -122,6 +122,11 @@ class LabDocument:
         is_multiline = "\r" in new_text or "\n" in new_text
         iterations_log: list[str] = []
 
+        # Adaptive convergence threshold: 0.5% of target, min 1px (2px for faux bold)
+        _base = max(1.0, target_h * 0.005)
+        phase2_threshold = max(2.0, target_h * 0.01) if record.faux_bold else _base
+        final_threshold = max(2.0, target_h * 0.01) if record.faux_bold else max(2.0, target_h * 0.008)
+
         self._activate()
         lab_layer, ti = self._create_text_layer(
             new_font_ps, new_text, 72.0, record.tracking, record.auto_leading, record.leading_pt
@@ -164,7 +169,7 @@ class LabDocument:
 
             for prec_iter in range(1, 6):
                 h = get_h()
-                if abs(h - target_h) < 1.0:
+                if abs(h - target_h) < phase2_threshold:
                     break
 
                 # Step 1: Adjust leading (7-iteration binary search)
@@ -199,7 +204,7 @@ class LabDocument:
                     logger.log_iteration(10 + prec_iter, "lead", current_leading, h, target_h)
 
                 # Step 2: If still not converged, adjust size and re-anchor leading
-                if abs(h - target_h) >= 1.0:
+                if abs(h - target_h) >= phase2_threshold:
                     try:
                         current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
                         if h > target_h:
@@ -215,7 +220,7 @@ class LabDocument:
             # Singleline (or multiline with auto_leading): size-only binary search
             for prec_iter in range(1, 6):
                 h = get_h()
-                if abs(h - target_h) < 1.0:
+                if abs(h - target_h) < phase2_threshold:
                     break
                 try:
                     current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
@@ -374,7 +379,7 @@ class LabDocument:
 
         final_size_px = pt_to_px(final_size_pt, dpi)
         final_leading_px = pt_to_px(final_leading_pt, dpi)
-        converged = abs(final_h - target_h) < 2.0
+        converged = abs(final_h - target_h) < final_threshold
 
         try:
             lab_layer.Delete()

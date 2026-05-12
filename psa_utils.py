@@ -186,13 +186,13 @@ fname;
 """
 
 _JS_EXPAND_SO_CANVAS = """
-// Expand the canvas of the current SO document by 20% (scale 1.2x)
-// This prevents text from being clipped at SO boundaries
+// Expand the canvas of the current SO document.
+// scale factor is injected from Python side.
 var doc = app.activeDocument;
 var origWidth = doc.width;
 var origHeight = doc.height;
-var newWidth = origWidth * 1.2;
-var newHeight = origHeight * 1.2;
+var newWidth = origWidth * {scale};
+var newHeight = origHeight * {scale};
 var offsetX = (newWidth - origWidth) / 2;
 var offsetY = (newHeight - origHeight) / 2;
 
@@ -213,10 +213,15 @@ def get_so_psb_name(app, so_layer) -> str:
         return so_layer.Name
 
 
-def expand_so_canvas(app, so_doc) -> bool:
-    """Expand the canvas of a Smart Object document by 20% to prevent text clipping."""
+def expand_so_canvas(app, so_doc, scale: float = 1.2) -> bool:
+    """Expand the canvas of a Smart Object document to prevent text clipping.
+
+    Args:
+        scale: Expansion multiplier (e.g. 1.2 = 20% expansion on each side).
+               Higher values are used when the new text is significantly larger.
+    """
     try:
-        app.DoJavaScript(_JS_EXPAND_SO_CANVAS)
+        app.DoJavaScript(_JS_EXPAND_SO_CANVAS.format(scale=scale))
         return True
     except Exception:
         return False

@@ -54,11 +54,6 @@ def apply_workorder(
         direct_records = [r for r in to_process if not r.in_smart_object]
         so_records = [r for r in to_process if r.in_smart_object]
 
-        so_groups: dict[str, list[TextLayerRecord]] = {}
-        for r in so_records:
-            key = r.so_psb_name or r.so_layer_path or "unknown"
-            so_groups.setdefault(key, []).append(r)
-
         # Direct layers
         if direct_records:
             app.ActiveDocument = auto_doc
@@ -66,48 +61,40 @@ def apply_workorder(
                 for record in direct_records:
                     _process_layer(app, auto_doc, record, lab, logger)
 
-        # SO layers
-        for psb_name, group in so_groups.items():
-            so_layer = _find_so_by_psb(app, auto_doc, psb_name)
-            if so_layer is None:
-                for record in group:
-                    if record.so_layer_path:
-                        so_layer = find_layer_by_path(auto_doc, record.so_layer_path.split("/"))
-                    if so_layer is None and record.so_layer_id is not None:
-                        so_layer = find_layer_by_id(auto_doc, record.so_layer_id)
-                    if so_layer is not None:
-                        break
+        # SO layers — group by outermost SO and process recursively
+        if so_records:
+            outermost: dict[str, list[TextLayerRecord]] = {}
+            for r in so_records:
+                key = _outermost_key(r)
+                outermost.setdefault(key, []).append(r)
 
-            if so_layer is None:
-                logger.log_error(f"SO layer for PSB '{psb_name}'",
-                                 SOEnterError("SO layer not found in auto doc"))
-                continue
-
-            try:
-                app.ActiveDocument = auto_doc
-                so_doc = enter_smart_object(app, so_layer)
-            except SOEnterError as e:
-                logger.log_error(f"enter SO '{psb_name}'", e)
-                continue
-
-            try:
-                so_dpi = float(safe_get(so_doc, "Resolution", auto_dpi))
-                with LabDocument(app, so_dpi) as lab:
-                    for record in group:
-                        _process_layer(app, so_doc, record, lab, logger, in_so=True)
+            for key, group in outermost.items():
+                so_layer = _find_outermost_so(app, auto_doc, key, group, logger)
+                if so_layer is None:
+                    logger.log_error(f"SO '{key}'", SOEnterError("SO layer not found in auto doc"))
+                    continue
 
                 try:
-                    so_doc.Save()
-                    so_doc.Close(1)
+                    app.ActiveDocument = auto_doc
+                    so_doc = enter_smart_object(app, so_layer)
+                except SOEnterError as e:
+                    logger.log_error(f"enter SO '{key}'", e)
+                    continue
+
+                try:
+                    so_dpi = float(safe_get(so_doc, "Resolution", auto_dpi))
+                    _process_so_level(app, so_doc, group, logger, so_dpi, depth=1)
+                    try:
+                        so_doc.Save()
+                        so_doc.Close(1)
+                    except Exception as e:
+                        logger.log_error(f"save/close SO '{key}'", e)
                 except Exception as e:
-                    logger.log_error(f"save/close SO '{psb_name}'", e)
-
-            except Exception as e:
-                logger.log_error(f"process SO group '{psb_name}'", e)
-                try:
-                    so_doc.Close(2)
-                except Exception:
-                    pass
+                    logger.log_error(f"process SO group '{key}'", e)
+                    try:
+                        so_doc.Close(2)
+                    except Exception:
+                        pass
 
         try:
             app.ActiveDocument = auto_doc
@@ -190,8 +177,15 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
         # ===== Boundary protection for Smart Objects =====
         if in_so:
             try:
-                expand_so_canvas(app, doc)
-                logger.log_info(f"BOUNDARY PROTECT [{record.layer_path}]: Expanded SO canvas by 20%")
+                size_ratio = params.size_pt / max(record.size_pt, 0.1)
+                expansion = max(1.2, size_ratio * 1.1)
+                expansion = min(expansion, 3.0)
+                expand_so_canvas(app, doc, expansion)
+                pct = int((expansion - 1.0) * 100)
+                logger.log_info(
+                    f"BOUNDARY PROTECT [{record.layer_path}]: Expanded SO canvas by {pct}% "
+                    f"(scale={expansion:.3f}, size_ratio={size_ratio:.3f})"
+                )
             except Exception as e:
                 logger.log_warning(f"BOUNDARY PROTECT [{record.layer_path}]: {str(e)}")
 
@@ -203,9 +197,11 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
                 f"diff={real_h - record.bounds_h_px:+.2f}px"
             )
 
-            for refine_iter in range(1, 6):  # up to 5 refinement rounds
+            max_refine = 8 if record.faux_bold else 5
+            refine_converge_px = 4.0 if record.faux_bold else 2.0
+            for refine_iter in range(1, max_refine + 1):
                 diff = real_h - record.bounds_h_px
-                if abs(diff) < 2.0:
+                if abs(diff) < refine_converge_px:
                     break
                 ratio = record.bounds_h_px / real_h if real_h > 0.5 else 1.0
                 new_size_pt = params.size_pt * ratio
@@ -232,7 +228,8 @@ def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, 
 
             params.final_bounds_h_px = real_h
             params.target_h_px = record.bounds_h_px
-            params.converged = abs(real_h - record.bounds_h_px) < 3.0
+            final_conv_px = 6.0 if record.faux_bold else 3.0
+            params.converged = abs(real_h - record.bounds_h_px) < final_conv_px
         except Exception as e:
             logger.log_error(f"verify '{record.layer_path}'", e)
 
@@ -324,6 +321,97 @@ def _find_so_by_psb(app, container, target_psb: str):
         if result is not None:
             return result
     return None
+
+
+def _outermost_key(record: TextLayerRecord) -> str:
+    """Return the group key for the outermost SO of a record."""
+    if record.so_chain:
+        return record.so_chain[0].get("psb_name", record.so_chain[0].get("layer_path", "unknown"))
+    return record.so_psb_name or record.so_layer_path or "unknown"
+
+
+def _find_outermost_so(app, container, key: str, group: list[TextLayerRecord], logger):
+    """Find the outermost SO layer in container for a group of records."""
+    so_layer = _find_so_by_psb(app, container, key)
+    if so_layer is not None:
+        return so_layer
+    first = group[0]
+    if first.so_chain:
+        entry = first.so_chain[0]
+        if entry.get("layer_path"):
+            so_layer = find_layer_by_path(container, entry["layer_path"].split("/"))
+        if so_layer is None and entry.get("layer_id") is not None:
+            so_layer = find_layer_by_id(container, entry["layer_id"])
+    else:
+        if first.so_layer_path:
+            so_layer = find_layer_by_path(container, first.so_layer_path.split("/"))
+        if so_layer is None and first.so_layer_id is not None:
+            so_layer = find_layer_by_id(container, first.so_layer_id)
+    return so_layer
+
+
+def _process_so_level(app, doc, records: list[TextLayerRecord], logger, dpi: float, depth: int):
+    """Recursively process records inside an SO document.
+
+    At each depth level, records whose so_chain length matches the depth
+    are processed directly. Records with deeper chains are grouped by the
+    next SO in the chain and processed via recursive entry.
+    """
+    direct_here: list[TextLayerRecord] = []
+    nested: dict[str, list[TextLayerRecord]] = {}
+
+    for r in records:
+        chain_len = len(r.so_chain)
+        if chain_len <= depth:
+            # Legacy (chain_len=0) or exact match at this level
+            direct_here.append(r)
+        else:
+            next_entry = r.so_chain[depth]
+            nkey = next_entry.get("psb_name", next_entry.get("layer_path", "unknown"))
+            nested.setdefault(nkey, []).append(r)
+
+    # Process records directly at this level
+    if direct_here:
+        with LabDocument(app, dpi) as lab:
+            for r in direct_here:
+                _process_layer(app, doc, r, lab, logger, in_so=True)
+
+    # Recurse into nested SOs within this document
+    for nkey, ngroup in nested.items():
+        so_layer = _find_so_by_psb(app, doc, nkey)
+        if so_layer is None:
+            entry = ngroup[0].so_chain[depth]
+            if entry.get("layer_path"):
+                so_layer = find_layer_by_path(doc, entry["layer_path"].split("/"))
+            if so_layer is None and entry.get("layer_id") is not None:
+                so_layer = find_layer_by_id(doc, entry["layer_id"])
+
+        if so_layer is None:
+            logger.log_error(f"nested SO '{nkey}' at depth {depth}",
+                             SOEnterError("SO layer not found"))
+            continue
+
+        try:
+            app.ActiveDocument = doc
+            inner_doc = enter_smart_object(app, so_layer)
+        except SOEnterError as e:
+            logger.log_error(f"enter nested SO '{nkey}'", e)
+            continue
+
+        try:
+            inner_dpi = float(safe_get(inner_doc, "Resolution", dpi))
+            _process_so_level(app, inner_doc, ngroup, logger, inner_dpi, depth + 1)
+            try:
+                inner_doc.Save()
+                inner_doc.Close(1)
+            except Exception as e:
+                logger.log_error(f"save/close nested SO '{nkey}'", e)
+        except Exception as e:
+            logger.log_error(f"process nested SO '{nkey}'", e)
+            try:
+                inner_doc.Close(2)
+            except Exception:
+                pass
 
 
 def _make_auto_path(source_psd_path: str) -> str:

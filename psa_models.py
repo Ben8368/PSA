@@ -45,6 +45,7 @@ class TextLayerRecord:
     new_font_weight: str | None = None
     new_font_ps: str | None = None
     enabled: bool = False
+    so_chain: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +56,7 @@ class TextLayerRecord:
             "so_layer_id": self.so_layer_id,
             "so_layer_path": self.so_layer_path,
             "so_psb_name": self.so_psb_name,
+            "so_chain": self.so_chain,
             "text": self.text,
             "font": self.font,
             "size_pt": round(self.size_pt, 4),
@@ -122,6 +124,7 @@ class TextLayerRecord:
             new_font_weight=d.get("new_font_weight"),
             new_font_ps=d.get("new_font_ps"),
             enabled=d.get("enabled", False),
+            so_chain=d.get("so_chain", []),
         )
 
 

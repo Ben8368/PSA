@@ -57,6 +57,7 @@ def _walk_layers(
     records: list[TextLayerRecord],
     visited_psbs: set[str],
     logger,
+    so_chain: list[dict] | None = None,
 ):
     try:
         layers = container.Layers
@@ -87,6 +88,7 @@ def _walk_layers(
                     so_layer_id=so_layer_id,
                     so_layer_path=so_layer_path,
                     so_psb_name=so_psb_name,
+                    so_chain=so_chain or [],
                 )
                 records.append(record)
                 if logger:
@@ -109,6 +111,11 @@ def _walk_layers(
                 so_doc = enter_smart_object(app, layer)
                 so_dpi = float(safe_get(so_doc, "Resolution", dpi))
                 so_layer_path_str = "/".join(current_path)
+                so_id = safe_get(layer, "id", None)
+
+                # Build chain entry and append for nested SO tracking
+                entry = {"psb_name": psb_name, "layer_path": so_layer_path_str, "layer_id": so_id}
+                new_chain = (so_chain or []) + [entry]
 
                 with PixelUnitsContext(app):
                     _walk_layers(
@@ -117,12 +124,13 @@ def _walk_layers(
                         path_parts=[],
                         dpi=so_dpi,
                         in_smart_object=True,
-                        so_layer_id=safe_get(layer, "id", None),
+                        so_layer_id=so_id,
                         so_layer_path=so_layer_path_str,
                         so_psb_name=psb_name,
                         records=records,
                         visited_psbs=visited_psbs,
                         logger=logger,
+                        so_chain=new_chain,
                     )
 
                 # Close SO doc without saving
@@ -151,6 +159,7 @@ def _walk_layers(
                     records=records,
                     visited_psbs=visited_psbs,
                     logger=logger,
+                    so_chain=so_chain,
                 )
             except Exception:
                 pass
@@ -165,6 +174,7 @@ def _extract_text_record(
     so_layer_id: int | None,
     so_layer_path: str | None,
     so_psb_name: str | None,
+    so_chain: list[dict] | None = None,
 ) -> TextLayerRecord:
     ti = art_layer.TextItem
     layer_id = safe_get(art_layer, "id", -1)
@@ -245,4 +255,5 @@ def _extract_text_record(
         color_r=color_r,
         color_g=color_g,
         color_b=color_b,
+        so_chain=so_chain or [],
     )
