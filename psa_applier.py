@@ -10,6 +10,7 @@ from psa_utils import (
     find_layer_by_path,
     get_so_psb_name,
     pt_to_px,
+    layer_bounds_px,
     PSAError,
     SOEnterError,
     LayerNotFoundError,
@@ -62,28 +63,7 @@ def apply_workorder(
             app.ActiveDocument = auto_doc
             with LabDocument(app, auto_dpi) as lab:
                 for record in direct_records:
-                    logger.log_layer_before(record)
-                    try:
-                        layer = find_layer_by_id(auto_doc, record.layer_id)
-                        if layer is None:
-                            raise LayerNotFoundError(
-                                f"Layer id={record.layer_id} path='{record.layer_path}' not found"
-                            )
-                        new_font_ps = record.new_font_ps or record.font
-                        new_text = record.new_text if record.new_text is not None else record.text
-                        logger.log_apply_start(record.layer_path, record.bounds_h_px, new_font_ps)
-                        # Activate layer before lab (lab switches active doc)
-                        app.ActiveDocument = auto_doc
-                        auto_doc.ActiveLayer = layer
-                        params = lab.find_adapted_params(record, new_font_ps, new_text, logger)
-                        # Restore active doc to auto_doc before writing
-                        app.ActiveDocument = auto_doc
-                        auto_doc.ActiveLayer = layer
-                        _apply_to_text_layer(app, auto_doc, layer, params, record, logger)
-                        logger.log_apply_result(record.layer_path, params, record)
-                        logger.log_layer_after(record, params)
-                    except Exception as e:
-                        logger.log_error(f"apply direct layer '{record.layer_path}'", e)
+                    _process_layer(app, auto_doc, record, lab, logger)
 
         # SO layers
         for psb_name, group in so_groups.items():
@@ -113,31 +93,7 @@ def apply_workorder(
                 so_dpi = float(safe_get(so_doc, "Resolution", auto_dpi))
                 with LabDocument(app, so_dpi) as lab:
                     for record in group:
-                        logger.log_layer_before(record)
-                        try:
-                            parts = record.layer_path.split("/")
-                            layer = find_layer_by_path(so_doc, parts)
-                            if layer is None:
-                                layer = find_layer_by_id(so_doc, record.layer_id)
-                            if layer is None:
-                                raise LayerNotFoundError(
-                                    f"Layer '{record.layer_path}' not found in SO '{psb_name}'"
-                                )
-                            new_font_ps = record.new_font_ps or record.font
-                            new_text = record.new_text if record.new_text is not None else record.text
-                            logger.log_apply_start(record.layer_path, record.bounds_h_px, new_font_ps)
-                            # Activate SO layer before lab switches active doc
-                            app.ActiveDocument = so_doc
-                            so_doc.ActiveLayer = layer
-                            params = lab.find_adapted_params(record, new_font_ps, new_text, logger)
-                            # Restore SO doc as active before writing
-                            app.ActiveDocument = so_doc
-                            so_doc.ActiveLayer = layer
-                            _apply_to_text_layer(app, so_doc, layer, params, record, logger)
-                            logger.log_apply_result(record.layer_path, params, record)
-                            logger.log_layer_after(record, params)
-                        except Exception as e:
-                            logger.log_error(f"apply SO layer '{record.layer_path}'", e)
+                        _process_layer(app, so_doc, record, lab, logger, in_so=True)
 
                 try:
                     so_doc.Save()
@@ -171,8 +127,117 @@ def apply_workorder(
     return auto_path
 
 
+def _process_layer(app, doc, record: TextLayerRecord, lab: LabDocument, logger, in_so: bool = False):
+    """Handle one layer: find it, calibrate scale via lab, run adaptive, apply, verify+refine."""
+    try:
+        if in_so:
+            parts = record.layer_path.split("/")
+            layer = find_layer_by_path(doc, parts)
+            if layer is None:
+                layer = find_layer_by_id(doc, record.layer_id)
+        else:
+            layer = find_layer_by_id(doc, record.layer_id)
+
+        if layer is None:
+            raise LayerNotFoundError(
+                f"Layer id={record.layer_id} path='{record.layer_path}' not found"
+            )
+
+        logger.log_layer_before(record)
+        new_font_ps = record.new_font_ps or record.font
+        new_text = record.new_text if record.new_text is not None else record.text
+        logger.log_apply_start(record.layer_path, record.bounds_h_px, new_font_ps)
+
+        # ===== Method A: calibrate scale using original text in lab =====
+        scale = 1.0
+        try:
+            lab_orig_h = lab.measure_text(
+                font_ps=record.font,
+                contents=record.text,
+                size_pt=record.size_pt,
+                tracking=record.tracking,
+                auto_leading=record.auto_leading,
+                leading_pt=record.leading_pt,
+            )
+            if lab_orig_h > 0.5:
+                scale = record.bounds_h_px / lab_orig_h
+            logger.log_info(
+                f"CALIBRATE [{record.layer_path}]: real_h={record.bounds_h_px:.2f}px "
+                f"lab_h={lab_orig_h:.2f}px scale={scale:.4f}"
+            )
+        except Exception as e:
+            logger.log_error(f"calibrate scale for '{record.layer_path}'", e)
+            scale = 1.0
+
+        target_h_lab = record.bounds_h_px / scale if scale > 0 else record.bounds_h_px
+
+        # Restore doc+layer as active (lab switched it)
+        app.ActiveDocument = doc
+        doc.ActiveLayer = layer
+
+        # Run adaptive algorithm with corrected target
+        params = lab.find_adapted_params(
+            record, new_font_ps, new_text, logger,
+            target_h_override=target_h_lab,
+        )
+
+        # Apply to real layer
+        app.ActiveDocument = doc
+        doc.ActiveLayer = layer
+        _apply_to_text_layer(app, doc, layer, params, record, logger)
+
+        # ===== Method B: verify real rendered height, refine if needed =====
+        try:
+            real_h = _real_bounds_h(app, layer)
+            logger.log_info(
+                f"VERIFY [{record.layer_path}]: real_h={real_h:.2f}px target={record.bounds_h_px:.2f}px "
+                f"diff={real_h - record.bounds_h_px:+.2f}px"
+            )
+
+            for refine_iter in range(1, 6):  # up to 5 refinement rounds
+                diff = real_h - record.bounds_h_px
+                if abs(diff) < 2.0:
+                    break
+                ratio = record.bounds_h_px / real_h if real_h > 0.5 else 1.0
+                new_size_pt = params.size_pt * ratio
+                try:
+                    app.ActiveDocument = doc
+                    doc.ActiveLayer = layer
+                    ti = layer.TextItem
+                    ti.Size = new_size_pt
+                    if not params.auto_leading:
+                        new_leading = params.leading_pt * ratio
+                        ti.Leading = new_leading
+                        params.leading_pt = new_leading
+                        params.leading_px = pt_to_px(new_leading, record.dpi)
+                    params.size_pt = new_size_pt
+                    params.size_px = pt_to_px(new_size_pt, record.dpi)
+                except Exception as e:
+                    logger.log_error(f"refine iter {refine_iter} '{record.layer_path}'", e)
+                    break
+                real_h = _real_bounds_h(app, layer)
+                logger.log_info(
+                    f"REFINE {refine_iter} [{record.layer_path}]: size={new_size_pt:.4f}pt "
+                    f"real_h={real_h:.2f}px target={record.bounds_h_px:.2f}px"
+                )
+
+            params.final_bounds_h_px = real_h
+            params.converged = abs(real_h - record.bounds_h_px) < 3.0
+        except Exception as e:
+            logger.log_error(f"verify '{record.layer_path}'", e)
+
+        logger.log_apply_result(record.layer_path, params, record)
+        logger.log_layer_after(record, params)
+    except Exception as e:
+        logger.log_error(f"apply layer '{record.layer_path}'", e)
+
+
+def _real_bounds_h(app, art_layer) -> float:
+    bounds = layer_bounds_px(app, art_layer)
+    return float(bounds[3]) - float(bounds[1])
+
+
 def _apply_to_text_layer(app, doc, art_layer, params: AdaptedParams, record: TextLayerRecord, logger) -> None:
-    # Ensure correct doc is active and layer is selected
     try:
         app.ActiveDocument = doc
         doc.ActiveLayer = art_layer
