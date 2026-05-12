@@ -298,12 +298,13 @@ def _apply_to_text_layer(app, doc, art_layer, params: AdaptedParams, record: Tex
 
 
 def _resolve_font_for_record(record: TextLayerRecord, font_index: dict, logger) -> str:
-    if not record.new_font_family or not record.new_font_weight:
+    if not record.new_font_family or not record.new_font_family.strip():
         return record.font
+    target_weight = (record.new_font_weight or "").strip()
     ps_name = resolve_font(
         font_index=font_index,
         target_family=record.new_font_family,
-        target_weight_kw=record.new_font_weight,
+        target_weight_kw=target_weight,
         preserve_italic=False,
         original_ps_name=record.font,
     )

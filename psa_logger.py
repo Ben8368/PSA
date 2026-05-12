@@ -7,6 +7,7 @@ import sys
 class PSALogger:
     def __init__(self, log_path: str):
         self._path = log_path
+        self.log_path = log_path
         self._fh = open(log_path, "w", encoding="utf-8")
         self.iteration_buffer: list[str] = []
 
