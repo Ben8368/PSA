@@ -6,6 +6,44 @@
 
 ## [未发布]
 
+## [1.5.0] - 2026-05-12
+
+### 自适应收敛阈值
+- Phase 2 收敛阈值不再硬编码 1px，改为按目标高度动态缩放 `max(1.0, target_h * 0.005)`
+- 伪粗体图层使用加倍阈值 `max(2.0, target_h * 0.01)`
+- 最终收敛判定同步使用自适应阈值
+
+### 伪粗体（FauxBold）特殊处理
+- REFINE 最大迭代次数：伪粗体 8 次，普通图层 5 次
+- REFINE 收敛阈值：伪粗体 4px，普通 2px
+- 最终收敛阈值：伪粗体 6px，普通 3px
+- 解决伪粗体图层字体变更后边界框震荡导致的假阴性
+
+### 二级嵌套智能对象支持
+- `TextLayerRecord` 新增 `so_chain` 字段，记录从外层到内层的 SO 嵌套链
+- Scanner 递归进入 SO 时自动构建 `so_chain`
+- Applier 新增 `_process_so_level()` 递归函数，按深度逐层进入 SO
+- 向后兼容旧版工单（空 `so_chain` 视为单层 SO）
+
+### 自适应 SO 边界扩展
+- `expand_so_canvas()` 支持动态 scale 参数（原硬编码 1.2x）
+- 扩边比例按字号变化率计算：`max(1.2, size_ratio * 1.1)`，上限 3.0x
+- 日志输出扩边百分比、scale、size_ratio 三个指标
+
+### 字体匹配增强
+- `resolve_font()` 增加去空格回退搜索（如 "NotoSans" → "Noto Sans"）
+
+### 自动行距优化
+- `find_adapted_params()` 对 `auto_leading=True` 的多行文案跳过 leading 调整
+- 传入 lab 的初始 leading 值使用原始记录的 `leading_pt`
+
+### 代码变更
+- `psa_models.py`: +3 行（`so_chain` 字段）
+- `psa_lab.py`: +13/-3 行（自适应阈值 + auto_leading 优化）
+- `psa_scanner.py`: +13/-1 行（`so_chain` 追踪）
+- `psa_applier.py`: +182/-59 行（嵌套 SO + 伪粗体 + 自适应扩边）
+- `psa_utils.py`: +19/-3 行（动态 scale 参数）
+
 ## [1.4.0] - 2026-05-12
 
 ### 重构自适应算法 Phase 2 和 Phase 3

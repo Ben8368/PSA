@@ -491,18 +491,20 @@ python psa.py --psd "banner.psd" --workorder "banner_workorder.json"
 
 - 需要 Photoshop 在 Windows 上运行（COM 依赖）
 - 字符级别的混排格式（同一图层内多种字体/字号）暂不支持，只处理图层级属性
-- Phase 2 精确调整的收敛判定阈值为 1px，极端情况（如超大字号）可能需要调整
-- **伪粗体（FauxBold）图层**在字体变更后可能出现边界框震荡，REFINE 难以收敛到 2px 以内（测试中约 5px 偏差，视觉可接受）
-- **二级嵌套 SO**（PSB 内再包含 PSB）暂不支持，进入一级 SO 后无法再进入其内部的 SO
-- SO 边界防护采用固定 120% 扩边，极端字号变化下可能需要更大比例
 
-### 已实现功能（历史版本）
+### 已实现功能（v1.5.0 更新）
 
 | 功能 | 版本 | 说明 |
 |---|---|---|
+| 自适应收敛阈值 | v1.5.0 | Phase 2 阈值按目标高度 0.5% 缩放（最小 1px），超大字号不再过于严格 |
+| 伪粗体（FauxBold）特殊处理 | v1.5.0 | REFINE 迭代 5→8 次，收敛阈值放宽至 4px/6px，解决边界框震荡 |
+| 二级嵌套 SO 支持 | v1.5.0 | 新增 `so_chain` 字段追踪 SO 嵌套链，applier 递归进入深层 SO |
+| 自适应 SO 边界扩展 | v1.5.0 | 扩边比例按字号变化率动态计算 `max(1.2, ratio*1.1)`，上限 3x |
+| 字体名空格容错匹配 | v1.5.0 | `resolve_font` 增加去空格回退搜索（如 "NotoSans" → "Noto Sans"） |
+| 自动行距优化 | v1.5.0 | multiline+auto_leading 文案不再强制修改 leading，减少抖动 |
 | 字间距自适应（Phase 3） | v1.4.0 | 5 次迭代二分法，支持 fallback 和 leading 边界保护 |
 | A+B Scale Calibration | v1.3.0 | 变换图层自动校准 + 真实渲染验证 REFINE |
-| SO 边界防护 | v1.2.0 | 120% 画布扩展，防止文字切割 |
+| SO 边界防护 | v1.2.0 | 动态画布扩展，防止文字切割 |
 | 单行 Phase 2 分支 | v1.4.0 | 单行文案使用字号微调二分法，多行保持 leading+size 交替 |
 
 ### 扩展点
@@ -512,8 +514,6 @@ python psa.py --psd "banner.psd" --workorder "banner_workorder.json"
 | 批量文档处理 | `psa.py` | 新增 `batch` 子命令，遍历目录下所有 PSD |
 | GUI 工单编辑器 | 新文件 | 用 tkinter 或 web 界面替代手动编辑 JSON |
 | 颜色替换 | `psa_applier.py: _apply_to_text_layer()` | TextItem.Color 已在扫描中记录 |
-| 二级嵌套 SO | `psa_scanner.py` / `psa_applier.py` | 递归进入深层 SO |
-| 伪粗体特殊处理 | `psa_lab.py` | 增加 REFINE 迭代次数或放宽收敛阈值 |
 
 ---
 
