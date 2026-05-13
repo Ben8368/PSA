@@ -8,10 +8,12 @@
 
 ## [1.5.3] - 2026-05-13
 
-### SO PSB 完整路径去重
-- `get_so_psb_name()` 改为返回 `fileReference` 完整绝对路径，不再截取 `basename`
-- 同名但不同目录的 PSB 不再被错误合并，真正重复的 PSB（同路径）仍正确去重
-- 修复"两个都叫按钮.psb 但实际是不同的 SO"被识别为同一个的问题
+### SO PSB 复合主键去重
+- Scanner `visited_psbs` 改用 `fileReference@|@layer_path` 复合主键
+- Applier SO 分组和查找同步改为 `layer_path` 优先匹配 + psb_name 回退
+- 修复同名但不同源的嵌入 SO（如两个 `按钮.psb`）被错误合并的问题
+- 同路径真正重复的 PSB 仍正确去重，改一次到处生效
+- 扫描层数从 21 → 52，覆盖所有独立 SO 实例
 
 ### 三层宽度兜底
 - Level 1: Phase 2 后宽度预检查，ratio > 1.3 时预缩放字号并回跑 Phase 2
@@ -19,7 +21,8 @@
 - Level 3: 触 80% 地板锁定并 WARNING，放弃宽度匹配以保证可读性
 
 ### 代码变更
-- `psa_utils.py`: `get_so_psb_name()` 返回完整路径
+- `psa_scanner.py`: composite key visited_psbs 去重
+- `psa_applier.py`: `_outermost_key` + `_find_outermost_so` + `_process_so_level` 复合主键
 - `psa_lab.py`: 三层宽度兜底策略（+150/-30 行）
 
 ## [1.5.2] - 2026-05-13
