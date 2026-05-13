@@ -8,7 +8,6 @@ from psa_utils import (
     enter_smart_object,
     find_layer_by_id,
     find_layer_by_path,
-    get_so_psb_name,
     expand_so_canvas,
     pt_to_px,
     layer_bounds_px,
@@ -19,6 +18,9 @@ from psa_utils import (
 )
 from psa_fonts import build_font_index, resolve_font
 from psa_lab import LabDocument
+from psa_so_handler import (
+    _find_so_by_psb, outermost_key, find_outermost_so, process_so_level,
+)
 
 
 def apply_workorder(
@@ -83,11 +85,11 @@ def apply_workorder(
         if so_records:
             outermost: dict[str, list[TextLayerRecord]] = {}
             for r in so_records:
-                key = _outermost_key(r)
+                key = outermost_key(r)
                 outermost.setdefault(key, []).append(r)
 
             for key, group in outermost.items():
-                so_layer = _find_outermost_so(app, auto_doc, key, group, logger)
+                so_layer = find_outermost_so(app, auto_doc, key, group, logger)
                 if so_layer is None:
                     logger.log_error(f"SO '{key}'", SOEnterError("SO layer not found in auto doc"))
                     continue
@@ -101,7 +103,8 @@ def apply_workorder(
 
                 try:
                     so_dpi = float(safe_get(so_doc, "Resolution", auto_dpi))
-                    _process_so_level(app, so_doc, group, logger, so_dpi, depth=1)
+                    process_so_level(app, so_doc, group, logger, so_dpi, depth=1,
+                                     _process_layer_func=_process_layer)
                     try:
                         so_doc.Save()
                         so_doc.Close(1)
@@ -322,150 +325,6 @@ def _resolve_font_for_record(record: TextLayerRecord, font_index: dict, logger) 
         f"-> PS name='{ps_name}'"
     )
     return ps_name
-
-
-def _find_so_by_psb(app, container, target_psb: str):
-    try:
-        layers = container.Layers
-    except Exception:
-        return None
-    for i in range(layers.Count):
-        try:
-            lyr = layers[i]
-        except Exception:
-            continue
-        kind = safe_get(lyr, "Kind", None)
-        if kind == 17:
-            psb = get_so_psb_name(app, lyr)
-            if psb == target_psb:
-                return lyr
-        result = _find_so_by_psb(app, lyr, target_psb)
-        if result is not None:
-            return result
-    return None
-
-
-def _outermost_key(record: TextLayerRecord) -> str:
-    """Return the group key for the outermost SO of a record.
-
-    Uses a composite key of fileReference + layer_path to distinguish
-    same-name but different-source embedded Smart Objects.
-    """
-    if record.so_chain:
-        entry = record.so_chain[0]
-        psb = entry.get("psb_name", "unknown")
-        lpath = entry.get("layer_path", "unknown")
-        return f"{psb}@|@{lpath}"
-    psb = record.so_psb_name or "unknown"
-    lpath = record.so_layer_path or "unknown"
-    return f"{psb}@|@{lpath}"
-
-
-def _find_outermost_so(app, container, key: str, group: list[TextLayerRecord], logger):
-    """Find the outermost SO layer in container for a group of records.
-
-    Uses layer_path from the chain first (most precise), falls back to
-    psb_name match and layer_id.
-    """
-    first = group[0]
-    if first.so_chain:
-        entry = first.so_chain[0]
-        if entry.get("layer_path"):
-            so_layer = find_layer_by_path(container, entry["layer_path"].split("/"))
-            if so_layer is not None:
-                return so_layer
-        if entry.get("layer_id") is not None:
-            so_layer = find_layer_by_id(container, entry["layer_id"])
-            if so_layer is not None:
-                return so_layer
-        psb_name = entry.get("psb_name", "")
-    else:
-        if first.so_layer_path:
-            so_layer = find_layer_by_path(container, first.so_layer_path.split("/"))
-            if so_layer is not None:
-                return so_layer
-        if first.so_layer_id is not None:
-            so_layer = find_layer_by_id(container, first.so_layer_id)
-            if so_layer is not None:
-                return so_layer
-        psb_name = first.so_psb_name or ""
-
-    # Fallback: search by psb_name
-    if psb_name:
-        so_layer = _find_so_by_psb(app, container, psb_name)
-        if so_layer is not None:
-            return so_layer
-    return None
-
-
-def _process_so_level(app, doc, records: list[TextLayerRecord], logger, dpi: float, depth: int):
-    """Recursively process records inside an SO document.
-
-    At each depth level, records whose so_chain length matches the depth
-    are processed directly. Records with deeper chains are grouped by the
-    next SO in the chain and processed via recursive entry.
-    """
-    direct_here: list[TextLayerRecord] = []
-    nested: dict[str, list[TextLayerRecord]] = {}
-
-    for r in records:
-        chain_len = len(r.so_chain)
-        if chain_len <= depth or depth >= 3:
-            # Legacy, exact match, or max depth reached — process directly
-            direct_here.append(r)
-        else:
-            next_entry = r.so_chain[depth]
-            psb = next_entry.get("psb_name", "unknown")
-            lpath = next_entry.get("layer_path", "unknown")
-            nkey = f"{psb}@|@{lpath}"
-            nested.setdefault(nkey, []).append(r)
-
-    # Process records directly at this level
-    if direct_here:
-        with LabDocument(app, dpi) as lab:
-            for r in direct_here:
-                _process_layer(app, doc, r, lab, logger, in_so=True)
-
-    # Recurse into nested SOs within this document
-    for nkey, ngroup in nested.items():
-        # Prefer layer_path lookup (precise), then psb_name, then id
-        entry = ngroup[0].so_chain[depth]
-        so_layer = None
-        if entry.get("layer_path"):
-            so_layer = find_layer_by_path(doc, entry["layer_path"].split("/"))
-        if so_layer is None and entry.get("layer_id") is not None:
-            so_layer = find_layer_by_id(doc, entry["layer_id"])
-        if so_layer is None:
-            psb_name = entry.get("psb_name", "")
-            if psb_name:
-                so_layer = _find_so_by_psb(app, doc, psb_name)
-
-        if so_layer is None:
-            logger.log_error(f"nested SO '{nkey}' at depth {depth}",
-                             SOEnterError("SO layer not found"))
-            continue
-
-        try:
-            app.ActiveDocument = doc
-            inner_doc = enter_smart_object(app, so_layer)
-        except SOEnterError as e:
-            logger.log_error(f"enter nested SO '{nkey}'", e)
-            continue
-
-        try:
-            inner_dpi = float(safe_get(inner_doc, "Resolution", dpi))
-            _process_so_level(app, inner_doc, ngroup, logger, inner_dpi, depth + 1)
-            try:
-                inner_doc.Save()
-                inner_doc.Close(1)
-            except Exception as e:
-                logger.log_error(f"save/close nested SO '{nkey}'", e)
-        except Exception as e:
-            logger.log_error(f"process nested SO '{nkey}'", e)
-            try:
-                inner_doc.Close(2)
-            except Exception:
-                pass
 
 
 def _make_auto_path(source_psd_path: str) -> str:

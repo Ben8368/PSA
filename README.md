@@ -496,6 +496,7 @@ python psa.py --psd "banner.psd" --workorder "banner_workorder.json"
 
 | 功能 | 版本 | 说明 |
 |---|---|---|
+| 代码拆分 <500 行 | v1.5.4 | `psa_lab`→`psa_algorithm`, `psa_applier`→`psa_so_handler`，所有文件 <500 行 |
 | SO 复合主键去重 | v1.5.3 | `fileReference@|@layer_path` 复合主键，同名不同源嵌入 SO 不再误合并 |
 | 三层宽度兜底 | v1.5.3 | 预缩放 + tracking 二分 + 80% 硬底线，防西语等长文案溢出 |
 | "保一条"安全策略 | v1.5.2 | 各阶段早退时追加一次额外迭代，防边界震荡假收敛 |

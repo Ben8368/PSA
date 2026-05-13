@@ -1,6 +1,13 @@
 from __future__ import annotations
 from psa_models import TextLayerRecord, AdaptedParams
 from psa_utils import PixelUnitsContext, safe_get, pt_to_px, AdaptationError
+from psa_algorithm import (
+    phase1_binary_search,
+    phase2_multiline,
+    phase2_singleline,
+    width_precheck,
+    phase3_tracking,
+)
 
 
 class LabDocument:
@@ -65,7 +72,6 @@ class LabDocument:
                 return 0.0
 
     def _get_w(self, lab_layer) -> float:
-        """Get text layer width in pixels."""
         with PixelUnitsContext(self._app):
             try:
                 bounds = lab_layer.Bounds
@@ -75,7 +81,6 @@ class LabDocument:
 
     def measure_text(self, font_ps: str, contents: str, size_pt: float,
                       tracking: float, auto_leading: bool, leading_pt: float) -> float:
-        """Render text with given params in lab doc, return its bounds height in px. Cleans up layer after."""
         if self._doc is None:
             raise AdaptationError("Lab document is not open.")
         self._activate()
@@ -91,7 +96,6 @@ class LabDocument:
 
     def measure_text_width(self, font_ps: str, contents: str, size_pt: float,
                            tracking: float, auto_leading: bool, leading_pt: float) -> float:
-        """Render text and return its bounds width in px."""
         if self._doc is None:
             raise AdaptationError("Lab document is not open.")
         self._activate()
@@ -122,7 +126,6 @@ class LabDocument:
         is_multiline = "\r" in new_text or "\n" in new_text
         iterations_log: list[str] = []
 
-        # Adaptive convergence threshold: 0.5% of target, min 1px (2px for faux bold)
         _base = max(1.0, target_h * 0.005)
         phase2_threshold = max(2.0, target_h * 0.01) if record.faux_bold else _base
         final_threshold = max(2.0, target_h * 0.01) if record.faux_bold else max(2.0, target_h * 0.008)
@@ -138,143 +141,25 @@ class LabDocument:
         def get_w() -> float:
             return self._get_w(lab_layer)
 
-        # Phase 1: binary search on size, max 10 iterations, early exit
-        lo, hi = 1.0, 500.0
-        last_mid = 72.0
-        _p1_safety = False
-        for i in range(1, 11):
-            mid = (lo + hi) / 2.0
-            try: ti.Size = mid
-            except Exception: pass
-            last_mid = mid
-            h = get_h()
-            if logger:
-                logger.log_iteration(i, "size", mid, h, target_h)
-            log_entry = f"[iter {i:02d} size] tried={mid:.4f}pt -> h={h:.2f}px target={target_h:.2f}px"
-            iterations_log.append(log_entry)
-            if h < target_h:
-                lo = mid
-            else:
-                hi = mid
-            # Early exit: search range within 2pt or height within 4% of target
-            if abs(hi - lo) < 2.0 or (h > 0 and abs(h - target_h) / target_h < 0.04):
-                if _p1_safety:
-                    break
-                _p1_safety = True
+        # Phase 1: binary search on size
+        last_mid = phase1_binary_search(ti, get_h, target_h, iterations_log, logger)
 
-        # Phase 2: 5 precision iterations
-        # For multiline: alternate between leading and size adjustments
-        # For singleline: only adjust size via binary search
+        # Phase 2: precision adjustment
         if is_multiline and not record.auto_leading:
-            try:
-                ti.UseAutoLeading = False
-                current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                ti.Leading = current_size * 1.2
-            except Exception:
-                pass
-
-            _p2_safety = False
-            for prec_iter in range(1, 6):
-                h = get_h()
-                if abs(h - target_h) < phase2_threshold:
-                    if _p2_safety:
-                        break
-                    _p2_safety = True
-
-                # Step 1: Adjust leading (5-iteration binary search)
-                try:
-                    current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                    lo_l = current_size * 0.8
-                    hi_l = current_size * 2.5
-                    for _ in range(5):
-                        mid_l = (lo_l + hi_l) / 2.0
-                        try: ti.Leading = mid_l
-                        except Exception: pass
-                        h_test = get_h()
-                        if h_test < target_h:
-                            lo_l = mid_l
-                        else:
-                            hi_l = mid_l
-                except Exception:
-                    pass
-
-                h = get_h()
-                try:
-                    current_leading = float(safe_get(ti, "Leading", 0.0) or 0.0)
-                except Exception:
-                    current_leading = 0.0
-
-                log_entry = (
-                    f"[prec {prec_iter:02d} lead] tried={current_leading:.4f}pt"
-                    f" -> h={h:.2f}px target={target_h:.2f}px"
-                )
-                iterations_log.append(log_entry)
-                if logger:
-                    logger.log_iteration(7 + prec_iter, "lead", current_leading, h, target_h)
-
-                # Step 2: If still not converged, adjust size and re-anchor leading
-                if abs(h - target_h) >= phase2_threshold:
-                    try:
-                        current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                        if h > target_h:
-                            new_size = current_size * 0.97
-                        else:
-                            new_size = current_size * 1.03
-                        ti.Size = new_size
-                        ti.Leading = new_size * 1.2
-                        last_mid = new_size
-                    except Exception:
-                        pass
+            last_mid = phase2_multiline(ti, get_h, target_h, phase2_threshold,
+                                        last_mid, iterations_log, logger)
         else:
-            # Singleline (or multiline with auto_leading): size-only binary search
-            _p2_safety = False
-            for prec_iter in range(1, 6):
-                h = get_h()
-                if abs(h - target_h) < phase2_threshold:
-                    if _p2_safety:
-                        break
-                    _p2_safety = True
-                try:
-                    current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                    lo_s = current_size * 0.95
-                    hi_s = current_size * 1.05
-                    for _ in range(5):
-                        mid_s = (lo_s + hi_s) / 2.0
-                        try: ti.Size = mid_s
-                        except Exception: pass
-                        h_test = get_h()
-                        if h_test < target_h:
-                            lo_s = mid_s
-                        else:
-                            hi_s = mid_s
-                    last_mid = (lo_s + hi_s) / 2.0
-                    try: ti.Size = last_mid
-                    except Exception: pass
-                except Exception:
-                    pass
+            last_mid = phase2_singleline(ti, get_h, target_h, phase2_threshold,
+                                         last_mid, iterations_log, logger)
 
-                h = get_h()
-                try:
-                    current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                except Exception:
-                    current_size = last_mid
-
-                log_entry = (
-                    f"[prec {prec_iter:02d} size] tried={current_size:.4f}pt"
-                    f" -> h={h:.2f}px target={target_h:.2f}px"
-                )
-                iterations_log.append(log_entry)
-                if logger:
-                    logger.log_iteration(7 + prec_iter, "size", current_size, h, target_h)
-
-        # Capture Phase 2 state for boundary protection
+        # Capture Phase 2 state
         phase2_h = get_h()
         try:
-            phase2_leading = float(safe_get(ti, "Leading", 0.0) or 0.0) if not is_multiline else 0.0
+            phase2_leading = float(safe_get(ti, "Leading", 0.0) or 0.0) if is_multiline else 0.0
         except Exception:
             phase2_leading = 0.0
 
-        # Measure original text width once (used by pre-check and Phase 3)
+        # Measure original text width once
         try:
             orig_w = self.measure_text_width(
                 record.font, record.text, record.size_pt,
@@ -283,211 +168,16 @@ class LabDocument:
         except Exception:
             orig_w = 0.0
 
-        # ---- Level 1: width pre-check before Phase 3 ----
-        if orig_w > 1.0:
-            new_w = get_w()
-            if new_w > orig_w * 1.3:
-                prescale = orig_w / new_w
-                current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                new_size = current_size * prescale
-                size_floor = record.size_pt * 0.8
-                if new_size < size_floor:
-                    new_size = size_floor
-                try: ti.Size = new_size
-                except Exception: pass
-                last_mid = new_size
+        # Level 1: width pre-check
+        last_mid = width_precheck(ti, get_h, get_w, target_h, phase2_threshold,
+                                  orig_w, record.size_pt, last_mid, iterations_log, logger)
 
-                log_entry = (
-                    f"[width pre-check] new_w={new_w:.1f}px orig_w={orig_w:.1f}px "
-                    f"ratio={new_w / orig_w:.2f} > 1.3 → prescale to {new_size:.4f}pt "
-                    f"(floor={size_floor:.1f}pt)"
-                )
-                iterations_log.append(log_entry)
-                if logger:
-                    logger.log_info(log_entry)
+        # Phase 3: tracking/size micro-adjustment
+        p3 = phase3_tracking(ti, get_h, get_w, phase2_h, orig_w, record,
+                             last_mid, is_multiline, iterations_log, logger)
 
-                # Re-run simplified Phase 2 (size-only, 3 rounds)
-                for prec_iter in range(1, 4):
-                    h = get_h()
-                    if abs(h - target_h) < phase2_threshold:
-                        break
-                    try:
-                        cs = float(safe_get(ti, "Size", last_mid) or last_mid)
-                        lo_s = cs * 0.95
-                        hi_s = cs * 1.05
-                        for _ in range(5):
-                            mid_s = (lo_s + hi_s) / 2.0
-                            try: ti.Size = mid_s
-                            except Exception: pass
-                            h_test = get_h()
-                            if h_test < target_h:
-                                lo_s = mid_s
-                            else:
-                                hi_s = mid_s
-                        last_mid = (lo_s + hi_s) / 2.0
-                        try: ti.Size = last_mid
-                        except Exception: pass
-                    except Exception:
-                        pass
-
-                    h = get_h()
-                    try:
-                        cs = float(safe_get(ti, "Size", last_mid) or last_mid)
-                    except Exception:
-                        cs = last_mid
-                    log_entry = (
-                        f"[width pre-scale p2 {prec_iter:02d}] size={cs:.4f}pt "
-                        f"-> h={h:.2f}px target={target_h:.2f}px"
-                    )
-                    iterations_log.append(log_entry)
-                    if logger:
-                        logger.log_iteration(90 + prec_iter, "prescale", cs, h, target_h)
-
-        # Phase 3: 5 tracking/size micro-adjustment iterations
-        current_tracking = record.tracking
-        best_tracking = current_tracking
-        best_tracking_diff = float('inf')
-        tracking_adjustment_failed = False
-        width_hard_clamped = False
-
-        _p3_safety = False
-        for track_iter in range(1, 6):
-            try:
-                current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                new_w = get_w()
-
-                # Step 1: Try to adjust tracking to match original width
-                if orig_w > 1.0 and not tracking_adjustment_failed:
-                    width_diff = new_w - orig_w
-                    # Binary search for optimal tracking
-                    lo_t = current_tracking - 50
-                    hi_t = current_tracking + 50
-                    for _ in range(5):
-                        mid_t = (lo_t + hi_t) / 2.0
-                        try: ti.Tracking = mid_t
-                        except Exception: pass
-                        w_test = get_w()
-                        if w_test < orig_w:
-                            lo_t = mid_t
-                        else:
-                            hi_t = mid_t
-                    current_tracking = (lo_t + hi_t) / 2.0
-                    current_tracking = max(-100, min(200, current_tracking))
-                    try: ti.Tracking = current_tracking
-                    except Exception: pass
-
-                new_w_after = get_w()
-                tracking_diff = abs(new_w_after - orig_w) if orig_w > 0 else 0
-
-                log_entry = (
-                    f"[micro {track_iter:02d} track] tracking={current_tracking:.1f} "
-                    f"-> w={new_w_after:.2f}px orig_w={orig_w:.2f}px diff={tracking_diff:.2f}px"
-                )
-                iterations_log.append(log_entry)
-
-                if tracking_diff < best_tracking_diff:
-                    best_tracking_diff = tracking_diff
-                    best_tracking = current_tracking
-
-                # If width is close enough, stop (with safety take)
-                if tracking_diff < 5.0:
-                    if _p3_safety:
-                        break
-                    _p3_safety = True
-
-                # Step 2: tracking at limit, binary-search size down to match width
-                if tracking_diff > 10.0 and not tracking_adjustment_failed:
-                    try:
-                        ti.Tracking = -100.0
-                    except Exception:
-                        pass
-
-                    current_size = float(safe_get(ti, "Size", last_mid) or last_mid)
-                    size_floor = record.size_pt * 0.8
-                    lo_s = size_floor
-                    hi_s = current_size
-                    best_size = current_size
-                    best_w_diff = tracking_diff
-
-                    for _ in range(5):
-                        mid_s = (lo_s + hi_s) / 2.0
-                        try: ti.Size = mid_s
-                        except Exception: pass
-                        w_test = get_w()
-                        wd = abs(w_test - orig_w) if orig_w > 0 else 0
-                        if wd < best_w_diff:
-                            best_w_diff = wd
-                            best_size = mid_s
-                        if w_test > orig_w:
-                            lo_s = mid_s
-                        else:
-                            hi_s = mid_s
-
-                    # Check leading impact for multiline
-                    if is_multiline:
-                        try: ti.Size = best_size
-                        except Exception: pass
-                        new_h = get_h()
-                        h_diff = abs(new_h - phase2_h)
-                        if h_diff > 3.0:
-                            # Back off: choose a size that doesn't disturb leading
-                            best_size = max(best_size, current_size * 0.85)
-                            try: ti.Size = best_size
-                            except Exception: pass
-                            log_entry = (
-                                f"[micro {track_iter:02d} boundary] WARNING: size reduction "
-                                f"affecting leading. phase2_h={phase2_h:.2f}px new_h={new_h:.2f}px "
-                                f"h_diff={h_diff:.2f}px. backing off to {best_size:.4f}pt."
-                            )
-                            iterations_log.append(log_entry)
-                            tracking_adjustment_failed = True
-                            last_mid = best_size
-                            continue
-
-                    # Check hard floor
-                    if best_size <= size_floor:
-                        best_size = size_floor
-                        try: ti.Size = best_size
-                        except Exception: pass
-                        try: ti.Tracking = -100.0
-                        except Exception: pass
-                        last_mid = best_size
-                        width_hard_clamped = True
-                        tracking_adjustment_failed = True
-                        log_entry = (
-                            f"[micro {track_iter:02d} clamp] WARNING: size at 80% floor "
-                            f"({record.size_pt:.1f}pt → {best_size:.4f}pt). "
-                            f"width overflow, giving up width matching."
-                        )
-                        iterations_log.append(log_entry)
-                        if logger:
-                            logger.log_warning(log_entry)
-                        break
-
-                    try: ti.Size = best_size
-                    except Exception: pass
-                    last_mid = best_size
-                    log_entry = (
-                        f"[micro {track_iter:02d} size] binary-searched size to "
-                        f"{best_size:.4f}pt floor={size_floor:.1f}pt w_diff={best_w_diff:.1f}px"
-                    )
-                    iterations_log.append(log_entry)
-
-                    # Restart tracking search with new size
-                    current_tracking = -100.0
-
-            except Exception as e:
-                log_entry = f"[micro {track_iter:02d}] error: {str(e)}"
-                iterations_log.append(log_entry)
-
-        # Apply best tracking found
-        try:
-            ti.Tracking = best_tracking
-        except Exception:
-            pass
-
-        if tracking_adjustment_failed:
-            if width_hard_clamped:
+        if p3.tracking_adjustment_failed:
+            if p3.width_hard_clamped:
                 log_entry = (
                     f"[phase3 final] Width overflow: size clamped at 80% floor "
                     f"({record.size_pt:.1f}pt). Tracking locked at -100. "
@@ -503,9 +193,9 @@ class LabDocument:
         # Capture final state
         final_h = get_h()
         try:
-            final_size_pt = float(safe_get(ti, "Size", last_mid) or last_mid)
+            final_size_pt = float(safe_get(ti, "Size", p3.last_mid) or p3.last_mid)
         except Exception:
-            final_size_pt = last_mid
+            final_size_pt = p3.last_mid
 
         final_auto_leading = bool(safe_get(ti, "UseAutoLeading", True))
         final_leading_pt = 0.0
@@ -528,7 +218,7 @@ class LabDocument:
             auto_leading=final_auto_leading,
             leading_pt=final_leading_pt,
             leading_px=final_leading_px,
-            tracking=best_tracking,
+            tracking=p3.best_tracking,
             final_bounds_h_px=final_h,
             target_h_px=target_h,
             converged=converged,

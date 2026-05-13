@@ -6,6 +6,22 @@
 
 ## [未发布]
 
+## [1.5.4] - 2026-05-13
+
+### 代码拆分
+- `psa_lab.py` (536→226 行) 拆出 `psa_algorithm.py` (388 行)
+  - 四个阶段独立函数：`phase1_binary_search` / `phase2_multiline` / `phase2_singleline` / `width_precheck` / `phase3_tracking`
+  - `LabDocument.find_adapted_params()` 改为调用这些独立函数
+- `psa_applier.py` (508→366 行) 拆出 `psa_so_handler.py` (147 行)
+  - SO 递归处理函数：`outermost_key` / `find_outermost_so` / `process_so_level` / `_find_so_by_psb`
+- 所有文件均低于 500 行，便于后期维护
+
+### 代码变更
+- 新增 `psa_algorithm.py` (388 行)
+- 新增 `psa_so_handler.py` (147 行)
+- `psa_lab.py`: 536→226 行
+- `psa_applier.py`: 508→366 行
+
 ## [1.5.3] - 2026-05-13
 
 ### SO PSB 复合主键去重
