@@ -110,12 +110,18 @@ def _walk_layers(
 
             psb_name = get_so_psb_name(app, layer)
 
-            if psb_name in visited_psbs:
+            # Composite key: fileReference + layer path prevents same-name
+            # but different-source embedded SOs from being incorrectly merged.
+            so_key = f"{psb_name}@|@{'/'.join(current_path)}"
+            if so_key in visited_psbs:
                 if logger:
-                    logger.log_info(f"SO PSB '{psb_name}' already visited, skipping: {'/'.join(current_path)}")
+                    logger.log_info(
+                        f"SO composite key '{psb_name}' already visited, "
+                        f"skipping: {'/'.join(current_path)}"
+                    )
                 continue
 
-            visited_psbs.add(psb_name)
+            visited_psbs.add(so_key)
 
             try:
                 so_doc = enter_smart_object(app, layer)

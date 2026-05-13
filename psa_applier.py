@@ -346,30 +346,56 @@ def _find_so_by_psb(app, container, target_psb: str):
 
 
 def _outermost_key(record: TextLayerRecord) -> str:
-    """Return the group key for the outermost SO of a record."""
+    """Return the group key for the outermost SO of a record.
+
+    Uses a composite key of fileReference + layer_path to distinguish
+    same-name but different-source embedded Smart Objects.
+    """
     if record.so_chain:
-        return record.so_chain[0].get("psb_name", record.so_chain[0].get("layer_path", "unknown"))
-    return record.so_psb_name or record.so_layer_path or "unknown"
+        entry = record.so_chain[0]
+        psb = entry.get("psb_name", "unknown")
+        lpath = entry.get("layer_path", "unknown")
+        return f"{psb}@|@{lpath}"
+    psb = record.so_psb_name or "unknown"
+    lpath = record.so_layer_path or "unknown"
+    return f"{psb}@|@{lpath}"
 
 
 def _find_outermost_so(app, container, key: str, group: list[TextLayerRecord], logger):
-    """Find the outermost SO layer in container for a group of records."""
-    so_layer = _find_so_by_psb(app, container, key)
-    if so_layer is not None:
-        return so_layer
+    """Find the outermost SO layer in container for a group of records.
+
+    Uses layer_path from the chain first (most precise), falls back to
+    psb_name match and layer_id.
+    """
     first = group[0]
     if first.so_chain:
         entry = first.so_chain[0]
         if entry.get("layer_path"):
             so_layer = find_layer_by_path(container, entry["layer_path"].split("/"))
-        if so_layer is None and entry.get("layer_id") is not None:
+            if so_layer is not None:
+                return so_layer
+        if entry.get("layer_id") is not None:
             so_layer = find_layer_by_id(container, entry["layer_id"])
+            if so_layer is not None:
+                return so_layer
+        psb_name = entry.get("psb_name", "")
     else:
         if first.so_layer_path:
             so_layer = find_layer_by_path(container, first.so_layer_path.split("/"))
-        if so_layer is None and first.so_layer_id is not None:
+            if so_layer is not None:
+                return so_layer
+        if first.so_layer_id is not None:
             so_layer = find_layer_by_id(container, first.so_layer_id)
-    return so_layer
+            if so_layer is not None:
+                return so_layer
+        psb_name = first.so_psb_name or ""
+
+    # Fallback: search by psb_name
+    if psb_name:
+        so_layer = _find_so_by_psb(app, container, psb_name)
+        if so_layer is not None:
+            return so_layer
+    return None
 
 
 def _process_so_level(app, doc, records: list[TextLayerRecord], logger, dpi: float, depth: int):
@@ -389,7 +415,9 @@ def _process_so_level(app, doc, records: list[TextLayerRecord], logger, dpi: flo
             direct_here.append(r)
         else:
             next_entry = r.so_chain[depth]
-            nkey = next_entry.get("psb_name", next_entry.get("layer_path", "unknown"))
+            psb = next_entry.get("psb_name", "unknown")
+            lpath = next_entry.get("layer_path", "unknown")
+            nkey = f"{psb}@|@{lpath}"
             nested.setdefault(nkey, []).append(r)
 
     # Process records directly at this level
@@ -400,13 +428,17 @@ def _process_so_level(app, doc, records: list[TextLayerRecord], logger, dpi: flo
 
     # Recurse into nested SOs within this document
     for nkey, ngroup in nested.items():
-        so_layer = _find_so_by_psb(app, doc, nkey)
+        # Prefer layer_path lookup (precise), then psb_name, then id
+        entry = ngroup[0].so_chain[depth]
+        so_layer = None
+        if entry.get("layer_path"):
+            so_layer = find_layer_by_path(doc, entry["layer_path"].split("/"))
+        if so_layer is None and entry.get("layer_id") is not None:
+            so_layer = find_layer_by_id(doc, entry["layer_id"])
         if so_layer is None:
-            entry = ngroup[0].so_chain[depth]
-            if entry.get("layer_path"):
-                so_layer = find_layer_by_path(doc, entry["layer_path"].split("/"))
-            if so_layer is None and entry.get("layer_id") is not None:
-                so_layer = find_layer_by_id(doc, entry["layer_id"])
+            psb_name = entry.get("psb_name", "")
+            if psb_name:
+                so_layer = _find_so_by_psb(app, doc, psb_name)
 
         if so_layer is None:
             logger.log_error(f"nested SO '{nkey}' at depth {depth}",
