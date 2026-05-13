@@ -202,12 +202,17 @@ doc.resizeCanvas(newWidth, newHeight, AnchorPosition.MIDDLECENTER);
 
 
 def get_so_psb_name(app, so_layer) -> str:
+    """Return the full fileReference path of a Smart Object layer.
+
+    Uses ActionDescriptor to read the SO's embedded file path (absolute).
+    The full path uniquely identifies the PSB even when multiple SOs
+    in different directories share the same filename.
+    """
     try:
         app.ActiveDocument.ActiveLayer = so_layer
         result = app.DoJavaScript(_JS_GET_SO_FILENAME)
         if result:
-            import os
-            return os.path.basename(str(result))
+            return str(result).strip()
         return so_layer.Name
     except Exception:
         return so_layer.Name
