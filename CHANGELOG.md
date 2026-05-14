@@ -6,6 +6,14 @@
 
 ## [未发布]
 
+## [Completed] - 2026-05-13
+
+### 项目交付完成
+- 核心算法已交付至 [MediaTools](https://github.com/Ben8368/MediaTools)
+- 对方已完成移植，本项目使命达成
+- 项目状态：MVP 稳定版，不再迭代
+- 最终版本：v1.5.4
+
 ## [1.5.4] - 2026-05-13
 
 ### 代码拆分
@@ -253,7 +261,13 @@
 - `psa_lab.py` - 实验室 + 自适应算法
 - `psa_applier.py` - 工单应用
 
-[未发布]: https://github.com/anomalyco/psa/compare/v1.4.0...HEAD
+[未发布]: https://github.com/anomalyco/psa/compare/v1.5.4...HEAD
+[Completed]: https://github.com/anomalyco/psa/compare/v1.5.4...v1.5.4
+[1.5.4]: https://github.com/anomalyco/psa/compare/v1.5.3...v1.5.4
+[1.5.3]: https://github.com/anomalyco/psa/compare/v1.5.2...v1.5.3
+[1.5.2]: https://github.com/anomalyco/psa/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/anomalyco/psa/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/anomalyco/psa/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/anomalyco/psa/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/anomalyco/psa/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/anomalyco/psa/compare/v1.1.0...v1.2.0
